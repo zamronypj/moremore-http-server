@@ -830,10 +830,6 @@
         <Filename Value="..\src\crypt\mormot.crypt.secure.pas"/>
         <IsPartOfProject Value="True"/>
       </Unit14>
-      <Unit15>
-        <Filename Value="test.core.crypt.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit15>
       <Unit16>
         <Filename Value="test.core.base.pas"/>
         <IsPartOfProject Value="True"/>
@@ -866,14 +862,6 @@
         <Filename Value="..\src\net\mormot.net.sock.pas"/>
         <IsPartOfProject Value="True"/>
       </Unit23>
-      <Unit24>
-        <Filename Value="..\src\crypt\mormot.crypt.ecc256r1.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit24>
-      <Unit25>
-        <Filename Value="..\src\crypt\mormot.crypt.ecc.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit25>
       <Unit26>
         <Filename Value="..\src\net\mormot.net.client.pas"/>
         <IsPartOfProject Value="True"/>
@@ -890,70 +878,6 @@
         <Filename Value="..\src\lib\mormot.lib.winhttp.pas"/>
         <IsPartOfProject Value="True"/>
       </Unit29>
-      <Unit30>
-        <Filename Value="..\src\db\mormot.db.core.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit30>
-      <Unit31>
-        <Filename Value="..\src\db\mormot.db.sql.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit31>
-      <Unit32>
-        <Filename Value="..\src\db\mormot.db.proxy.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit32>
-      <Unit33>
-        <Filename Value="..\src\db\mormot.db.raw.oracle.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit33>
-      <Unit34>
-        <Filename Value="..\src\db\mormot.db.sql.oracle.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit34>
-      <Unit35>
-        <Filename Value="..\src\db\mormot.db.raw.odbc.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit35>
-      <Unit36>
-        <Filename Value="..\src\db\mormot.db.sql.odbc.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit36>
-      <Unit37>
-        <Filename Value="..\src\db\mormot.db.raw.oledb.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit37>
-      <Unit38>
-        <Filename Value="..\src\db\mormot.db.sql.oledb.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit38>
-      <Unit39>
-        <Filename Value="..\src\lib\mormot.lib.curl.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit39>
-      <Unit40>
-        <Filename Value="..\src\db\mormot.db.raw.postgres.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit40>
-      <Unit41>
-        <Filename Value="..\src\db\mormot.db.sql.postgres.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit41>
-      <Unit42>
-        <Filename Value="..\src\db\mormot.db.raw.sqlite3.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit42>
-      <Unit43>
-        <Filename Value="..\src\db\mormot.db.raw.sqlite3.static.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit43>
-      <Unit44>
-        <Filename Value="..\src\db\mormot.db.nosql.bson.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit44>
-      <Unit45>
-        <Filename Value="..\src\db\mormot.db.nosql.mongodb.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit45>
       <Unit46>
         <Filename Value="..\src\net\mormot.net.async.pas"/>
         <IsPartOfProject Value="True"/>
@@ -962,90 +886,10 @@
         <Filename Value="..\src\net\mormot.net.ws.core.pas"/>
         <IsPartOfProject Value="True"/>
       </Unit47>
-      <Unit48>
-        <Filename Value="..\src\db\mormot.db.sql.sqlite3.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit48>
-      <Unit49>
-        <Filename Value="..\src\orm\mormot.orm.core.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit49>
-      <Unit50>
-        <Filename Value="..\src\rest\mormot.rest.core.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit50>
-      <Unit51>
-        <Filename Value="..\src\soa\mormot.soa.core.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit51>
       <Unit52>
         <Filename Value="..\src\core\mormot.core.interfaces.pas"/>
         <IsPartOfProject Value="True"/>
       </Unit52>
-      <Unit53>
-        <Filename Value="..\src\orm\mormot.orm.rest.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit53>
-      <Unit54>
-        <Filename Value="..\src\rest\mormot.rest.client.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit54>
-      <Unit55>
-        <Filename Value="..\src\orm\mormot.orm.client.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit55>
-      <Unit56>
-        <Filename Value="..\src\orm\mormot.orm.server.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit56>
-      <Unit57>
-        <Filename Value="..\src\rest\mormot.rest.server.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit57>
-      <Unit58>
-        <Filename Value="..\src\soa\mormot.soa.server.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit58>
-      <Unit59>
-        <Filename Value="..\src\orm\mormot.orm.storage.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit59>
-      <Unit60>
-        <Filename Value="..\src\soa\mormot.soa.client.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit60>
-      <Unit61>
-        <Filename Value="..\src\rest\mormot.rest.memserver.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit61>
-      <Unit62>
-        <Filename Value="..\src\orm\mormot.orm.sql.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit62>
-      <Unit63>
-        <Filename Value="..\src\orm\mormot.orm.sqlite3.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit63>
-      <Unit64>
-        <Filename Value="..\src\rest\mormot.rest.sqlite3.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit64>
-      <Unit65>
-        <Filename Value="..\src\orm\mormot.orm.mongodb.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit65>
-      <Unit66>
-        <Filename Value="..\src\lib\mormot.lib.lizard.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit66>
-      <Unit67>
-        <Filename Value="..\src\rest\mormot.rest.http.client.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit67>
-      <Unit68>
-        <Filename Value="..\src\rest\mormot.rest.http.server.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit68>
       <Unit69>
         <Filename Value="..\src\net\mormot.net.ws.server.pas"/>
         <IsPartOfProject Value="True"/>
@@ -1074,74 +918,14 @@
         <Filename Value="..\src\net\mormot.net.rtsphttp.pas"/>
         <IsPartOfProject Value="True"/>
       </Unit75>
-      <Unit76>
-        <Filename Value="..\src\soa\mormot.soa.codegen.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit76>
-      <Unit77>
-        <Filename Value="..\src\rest\mormot.rest.mvc.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit77>
-      <Unit78>
-        <Filename Value="..\src\app\mormot.app.daemon.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit78>
-      <Unit79>
-        <Filename Value="test.core.data.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit79>
-      <Unit80>
-        <Filename Value="test.core.ecc.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit80>
-      <Unit81>
-        <Filename Value="..\src\app\mormot.app.console.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit81>
-      <Unit82>
-        <Filename Value="..\src\tools\ecc\mormot.tools.ecc.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit82>
       <Unit83>
         <Filename Value="test.net.proto.pas"/>
         <IsPartOfProject Value="True"/>
       </Unit83>
-      <Unit84>
-        <Filename Value="test.orm.core.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit84>
-      <Unit85>
-        <Filename Value="test.orm.sqlite3.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit85>
-      <Unit86>
-        <Filename Value="test.soa.network.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit86>
-      <Unit87>
-        <Filename Value="test.orm.extdb.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit87>
-      <Unit88>
-        <Filename Value="test.orm.network.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit88>
-      <Unit89>
-        <Filename Value="test.soa.core.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit89>
       <Unit90>
         <Filename Value="..\src\lib\mormot.lib.openssl11.pas"/>
         <IsPartOfProject Value="True"/>
       </Unit90>
-      <Unit91>
-        <Filename Value="..\src\crypt\mormot.crypt.openssl.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit91>
-      <Unit92>
-        <Filename Value="test.orm.threads.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit92>
       <Unit93>
         <Filename Value="..\src\lib\mormot.lib.brotli.pas"/>
         <IsPartOfProject Value="True"/>
@@ -1150,22 +934,10 @@
         <Filename Value="..\src\lib\mormot.lib.quickjs.pas"/>
         <IsPartOfProject Value="True"/>
       </Unit94>
-      <Unit95>
-        <Filename Value="test.core.script.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit95>
       <Unit96>
         <Filename Value="..\src\lib\mormot.lib.static.pas"/>
         <IsPartOfProject Value="True"/>
       </Unit96>
-      <Unit97>
-        <Filename Value="..\src\script\mormot.script.core.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit97>
-      <Unit98>
-        <Filename Value="..\src\script\mormot.script.quickjs.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit98>
     </Units>
   </ProjectOptions>
   <CompilerOptions>

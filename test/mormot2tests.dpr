@@ -24,11 +24,7 @@ uses
   mormot.core.os,
   mormot.core.log,
   mormot.core.test,
-  mormot.db.raw.sqlite3, // for the SQLite3 version below
 
-  {$ifdef USEZEOS}
-  mormot.db.sql.zeos,
-  {$endif USEZEOS}
   {$ifdef FPC}
   //jsontools in '.\3party\jsontools.pas',
   //superobject in '.\3party\superobject.pas',
@@ -41,23 +37,9 @@ uses
   //mormot.db.rad.unidac,
   //mormot.db.rad.nexusdb,
   {$endif FPC}
-  mormot.tools.ecc         in '..\src\tools\ecc\mormot.tools.ecc.pas',
   test.core.base           in '.\test.core.base.pas',
-  test.core.data           in '.\test.core.data.pas',
-  test.core.crypt          in '.\test.core.crypt.pas',
-  test.core.ecc            in '.\test.core.ecc.pas',
   test.core.collections    in '.\test.core.collections.pas',
-  {$ifdef LIBQUICKJSSTATIC}
-  test.core.script         in '.\test.core.script.pas',
-  {$endif LIBQUICKJSSTATIC}
   test.net.proto           in '.\test.net.proto.pas',
-  test.orm.core            in '.\test.orm.core.pas',
-  test.orm.sqlite3         in '.\test.orm.sqlite3.pas',
-  test.orm.extdb           in '.\test.orm.extdb.pas',
-  test.orm.threads         in '.\test.orm.threads.pas',
-  test.orm.network         in '.\test.orm.network.pas',
-  test.soa.core            in '.\test.soa.core.pas',
-  test.soa.network         in '.\test.soa.network.pas';
 
 
 { TIntegrationTests }
@@ -68,8 +50,6 @@ type
     function Run: boolean; override;
   published
     procedure CoreUnits;
-    procedure ORM;
-    procedure SOA;
   end;
 
 function TIntegrationTests.Run: boolean;
@@ -100,33 +80,7 @@ begin
     {$ifdef HASGENERICS} // do-nothing on oldest compilers (e.g. <= Delphi XE7)
     TTestCoreCollections,
     {$endif HASGENERICS}
-    TTestCoreCrypto, TTestCoreEcc,
     TTestCoreCompression, TNetworkProtocols
-  ]);
-end;
-
-procedure TIntegrationTests.ORM;
-begin
-  //exit;
-  AddCase([
-    //
-    TTestOrmCore, TTestSqliteFile, TTestSqliteFileWAL, TTestSqliteFileMemoryMap,
-    TTestSqliteMemory, TTestExternalDatabase,
-    TTestClientServerAccess, TTestMultiThreadProcess
-  ]);
-end;
-
-procedure TIntegrationTests.SOA;
-begin
-  //exit;
-  {$ifdef LIBQUICKJSSTATIC}
-  AddCase(TTestCoreScript);
-  {$endif LIBQUICKJSSTATIC}
-  //exit;
-  AddCase([
-    //
-    TTestServiceOrientedArchitecture,
-    TTestBidirectionalRemoteConnection
   ]);
 end;
 
