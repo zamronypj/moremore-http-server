@@ -28,5 +28,13 @@ $ wget https://synopse.info/files/mormot2static.7z
 
 Extract content of mormot2static.7z into `static` directory.
 
+### Set Environment variable
+
+Set `MOREMORE_DIR` to points to Moremore library directory
+
+```
+$ export MOREMORE_DIR="/path/to/moremore"
+```
+
 
 [Read original Read Me here](https://github.com/synopse/mORMot2/blob/master/README.md)
