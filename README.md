@@ -9,7 +9,6 @@ This is experimental and work in progress project so bugs and errors are to be e
 This repository aims to be slim version of HTTP server implementation of mORMot 2 without
 ORM, SOA, REST library etc. If you need them too, you may want to use mORMot 2 directly.
 
-
 ## Installation
 
 ### Clone this repository
@@ -26,7 +25,7 @@ Download https://synopse.info/files/mormot2static.7z
 $ wget https://synopse.info/files/mormot2static.7z
 ```
 
-Extract content of mormot2static.7z into `static` directory.
+Extract content of `mormot2static.7z` into `static` directory.
 
 ### Set Environment variable
 
@@ -36,5 +35,6 @@ Set `MOREMORE_DIR` to points to Moremore library directory
 $ export MOREMORE_DIR="/path/to/moremore"
 ```
 
+## Original Read Me
 
 [Read original Read Me here](https://github.com/synopse/mORMot2/blob/master/README.md)
