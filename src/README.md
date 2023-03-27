@@ -22,16 +22,16 @@ The source code tree is split into the following sub-folders:
 - [`lib`](lib) for external third-party libraries like *zlib* or *openssl*;
 - [`crypt`](crypt) for efficient symmetric/asymmetric cryptography;
 - [`net`](net) for the client/server communication layer;
-- [`db`](db) for our *SQLite3* kernel, and SQL/NoSQL direct access;
-- [`rest`](rest) for the RESTful client/server processing;
-- [`orm`](orm) for high-level ORM features;
-- [`soa`](soa) for high-level SOA features;
-- [`app`](app) for hosting (micro)services/daemons and applications;
-- [`ui`](ui) for VCL/LCL User Interface oriented components;
-- [`script`](script) for the supported (java)script engines;
-- [`ddd`](ddd) for *Domain-Driven-Design* related code;
-- [`misc`](misc) for miscellaneous reusable units;
-- [`tools`](tools) for some useful tools tied to our framework.
+- ~~[`db`](db) for our *SQLite3* kernel, and SQL/NoSQL direct access;~~
+- ~~[`rest`](rest) for the RESTful client/server processing;~~
+- ~~[`orm`](orm) for high-level ORM features;~~
+- ~~[`soa`](soa) for high-level SOA features;~~
+- ~~[`app`](app) for hosting (micro)services/daemons and applications;~~
+- ~~[`ui`](ui) for VCL/LCL User Interface oriented components;~~
+- ~~[`script`](script) for the supported (java)script engines;~~
+- ~~[`ddd`](ddd) for *Domain-Driven-Design* related code;~~
+- ~~[`misc`](misc) for miscellaneous reusable units;~~
+- ~~[`tools`](tools) for some useful tools tied to our framework.~~
 
 
 ## Units Naming
