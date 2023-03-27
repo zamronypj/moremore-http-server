@@ -26,6 +26,7 @@ $ wget https://synopse.info/files/mormot2static.7z
 ```
 
 Extract content of `mormot2static.7z` into `static` directory.
+[Read mORMot Static Compilation Reference](https://github.com/synopse/mORMot2/tree/master/res/static) for more information.
 
 ### Set Environment variable
 
