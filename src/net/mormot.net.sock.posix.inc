@@ -10,7 +10,7 @@ uses
   termio,
   sockets,
   {$ifdef OSLINUXANDROID}
-  linux, // for epoll
+  linux,   // for epoll
   {$endif OSLINUXANDROID}
   initc; // link clib='c' for our socket purpose
 
@@ -436,6 +436,13 @@ begin
     PCardinal(@addr4.sin_addr)^ := cLocalhost32; // 127.0.0.1
     exit;
   end
+  else if (address = cBroadcast) or
+          (address = c6Broadcast) then
+  begin
+    addr4.sin_family := AF_INET;
+    PCardinal(@addr4.sin_addr)^ := cardinal(-1); // 255.255.255.255
+    exit;
+  end
   else if (address = cAnyHost) or
           (address = c6AnyHost) then
   begin
@@ -531,6 +538,20 @@ begin
     SetOpt(SOL_SOCKET, SO_REUSEADDR, @v.l_onoff, SizeOf(v.l_onoff));
     {$endif OSBSDDARWIN}
   end;
+end;
+
+procedure TNetSocketWrap.SetCork(cork: boolean);
+var
+  v: integer;
+begin
+  v := ord(cork);
+  {$ifdef OSLINUXANDROID}
+  SetOpt(IPPROTO_TCP, TCP_CORK, @v, SizeOf(v));
+  {$else}
+  {$ifdef OSBSDDARWIN}
+  SetOpt(IPPROTO_TCP, TCP_NOPUSH, @v, SizeOf(v));
+  {$endif OSBSDDARWIN}
+  {$endif OSLINUXANDROID}
 end;
 
 function TNetSocketWrap.WaitFor(ms: integer; scope: TNetEvents;
@@ -665,6 +686,10 @@ begin
                         IP4Text(@sin_addr, s);
                     tiaIPv4Private:
                       if not IsPublicIP(integer(sin_addr)) then
+                        IP4Text(@sin_addr, s);
+                    tiaIPv4DhcpPublic:
+                      if IsPublicIP(integer(sin_addr)) and
+                         not IsApipaIP(integer(sin_addr)) then
                         IP4Text(@sin_addr, s);
                   end;
           AF_INET6:
@@ -802,10 +827,63 @@ end;
 
 {$endif USE_IFADDRS}
 
+function GetNextSpaced(var P: PAnsiChar): RawUtf8;
+var
+  S: PAnsiChar;
+begin
+  result := '';
+  while P^ = ' ' do
+    inc(P);
+  if P^ < ' ' then
+    exit; // end of line or end of file
+  S := P;
+  repeat
+    inc(P);
+  until P^ <= ' ';
+  FastSetString(result, S, P - S);
+end;
+
+function _GetDnsAddresses(usePosixEnv, getAD: boolean): TRawUtf8DynArray;
+var
+  resolv, one: RawUtf8;
+  p: PUtf8Char;
+  n: PtrInt;
+  ok: boolean;
+begin
+  result := nil;
+  if usePosixEnv then
+    resolv := StringFromFile(GetEnvironmentVariable('ETC'), true);
+  if resolv = '' then
+    // all systems are likely to have or generate this file
+    // - the libc seems to read it for its gethostname()
+    resolv := StringFromFile('/etc/resolv.conf');
+  n := 0;
+  p := pointer(resolv);
+  while p <> nil do
+  begin
+    if getAD then
+      ok := NetStartWith(p, 'SEARCH ') or
+            NetStartWith(p, 'DOMAIN ')  // "domain" is used e.g. on MacOS
+    else
+      ok := NetStartWith(p, 'NAMESERVER ');
+    if ok then
+    begin
+      p := PosChar(p, ' '); // search ad.mycomp.tld mycom.tld
+      repeat
+        one := GetNextSpaced(p);
+        if one = '' then
+          break;
+        SetLength(result, n + 1);
+        result[n] := one;
+        inc(n);
+      until false;
+    end;
+    p := GotoNextLine(p);
+  end;
+end;
+
 
 { ******************** Efficient Multiple Sockets Polling }
-
-{$ifdef USEPOLL}
 
 type
   /// socket polling via the POSIX poll API
@@ -854,27 +932,28 @@ begin
   s := PtrUInt(socket);
   new := -1;
   p := pointer(fFD);
-  if fFDCount = fCount then
-  begin
-    // no void entry
-    for i := 1 to fFDCount do
-      if p^.fd = s then
-        // already subscribed
-        exit
-      else
-        inc(p);
-  end
-  else
-    for i := 0 to fFDCount - 1 do
+  if p <> nil then
+    if fFDCount = fCount then
     begin
-      fd := p^.fd;
-      if fd = s then
-        // already subscribed
-        exit
-      else if fd < 0 then
-        // found a void entry
-        new := i;
-    end;
+      // no void entry
+      for i := 1 to fFDCount do
+        if p^.fd = s then
+          // already subscribed
+          exit
+        else
+          inc(p);
+    end
+    else
+      for i := 0 to fFDCount - 1 do
+      begin
+        fd := p^.fd;
+        if fd = s then
+          // already subscribed
+          exit
+        else if fd < 0 then
+          // found a void entry
+          new := i;
+      end;
   if new < 0 then
   begin
     if fFDCount = length(fFD) then
@@ -1002,9 +1081,17 @@ begin
   result := true;
 end;
 
+function PollFewSockets: TPollSocketAbstract;
+begin
+  result := TPollSocketPoll.Create(nil);
+end;
+
+
+{$ifdef USEPOLL}
+
 function PollSocketClass: TPollSocketClass;
 begin
-  PollSocketClass := TPollSocketPoll;
+  result := TPollSocketPoll;
 end;
 
 {$else}
@@ -1030,6 +1117,8 @@ type
       timeoutMS: integer): boolean; override;
     // stop epolling
     procedure Terminate; override;
+    // return true for epoll
+    class function FollowEpoll: boolean; override;
     // read-only access to the low-level epoll_create file descriptor
     property EPFD: integer
       read fEPFD;
@@ -1056,6 +1145,11 @@ begin
     exit;
   fpClose(fEPFD);
   fEPFD := -1;
+end;
+
+class function TPollSocketEpoll.FollowEpoll: boolean;
+begin
+  result := true; // TPollSocketEpoll is thread-safe and has no size limit
 end;
 
 const
@@ -1194,7 +1288,7 @@ end;
 
 function PollSocketClass: TPollSocketClass;
 begin
-  PollSocketClass := TPollSocketEpoll;
+  result := TPollSocketEpoll;
 end;
 
 {$endif USEPOLL}

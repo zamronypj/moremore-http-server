@@ -97,7 +97,7 @@ type
       const encoding: RawUtf8 = '');
     /// append a file upload section from a local file
     // - the supplied file won't be loaded into memory, but created as an
-    // internal TFileStream to be retrieved by successive Read() calls
+    // internal TFileStreamEx to be retrieved by successive Read() calls
     // - warning: should be called after AddContent
     procedure AddFile(const name: RawUtf8; const filename: TFileName;
       const contenttype: RawUtf8 = '');
@@ -426,6 +426,10 @@ type
 
 /// returns the HTTP User-Agent header value of a mORMot client including
 // the Instance class name in its minified/uppercase-only translation
+// - typical value is "Mozilla/5.0 (Linux x64; mORMot) HCS/2.0.4957 Tests/3"
+// for THttpClientSocket from a Tests.exe application in version 3.x
+// - note: the framework would identify the 'mORMot' pattern in the user-agent
+// header to enable advanced behavior e.g. about JSON transmission
 function DefaultUserAgent(Instance: TObject): RawUtf8;
 
 /// create a THttpClientSocket, returning nil on error
@@ -1279,7 +1283,7 @@ begin
     if content <> '' then
       s := s + #13#10 + content + #13#10
     else
-      s := s + #13#10; // a TFileStream content will be appended
+      s := s + #13#10; // a TFileStreamEx content will be appended
     inc(fFilesCount);
   end;
   Append(s);
@@ -1337,7 +1341,7 @@ var
   P: PShortString;
   name: ShortString;
 begin
-  // instance class THttpClientSocket translated into 'HCS'
+  // instance class translated e.g. THttpClientSocket into 'HCS'
   P := ClassNameShort(Instance);
   name[0] := #0;
   for i := 2 to ord(P^[0]) do
@@ -1347,8 +1351,10 @@ begin
     P := @name;
   // note: the framework would identify 'mORMot' pattern in the user-agent
   // header to enable advanced behavior e.g. about JSON transmission
-  FormatUtf8('Mozilla/5.0 (' + OS_TEXT + '; mORMot ' +
-    SYNOPSE_FRAMEWORK_VERSION + ' %)', [P^], result);
+  FormatUtf8(
+    'Mozilla/5.0 (' + OS_TEXT + ' ' + CPU_ARCH_TEXT + '; mORMot) %/' +
+    SYNOPSE_FRAMEWORK_VERSION + ' %/%',
+    [P^, Executable.ProgramName, Executable.Version.Major], result);
 end;
 
 
@@ -2042,7 +2048,7 @@ begin
         Context.header := Context.header + #13#10 + bak;
       Sender.RequestInternal(Context);
     until Context.status <> unauthstatus;
-    // here Context is the final answer (sucess or auth error) from the server
+    // here Context is the final answer (success or auth error) from the server
   finally
     FreeSecContext(sc);
     if Assigned(Sender.OnLog) then

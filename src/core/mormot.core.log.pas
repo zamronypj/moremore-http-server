@@ -263,78 +263,81 @@ const
     ' dddIN ',  // sllDDDInfo
     ' mon   '); // sllMonitoring
 
+var
   /// RGB colors corresponding to each logging level
   // - matches the TColor values, as used by the VCL
   // - first array is for the background, second is for the text (black/white)
+  // - is defined as var and not const to allow customization at runtime
   LOG_LEVEL_COLORS: array[boolean, TSynLogInfo] of integer = (
-   ($FFFFFF,  // sllNone
-    $DCC0C0,  // sllInfo
-    $DCDCDC,  // sllDebug
-    $C0C0C0,  // sllTrace
-    $8080C0,  // sllWarning
-    $8080FF,  // sllError
-    $C0DCC0,  // sllEnter
-    $DCDCC0,  // sllLeave
-    $C0C0F0,  // sllLastError
-    $C080FF,  // sllException
-    $C080F0,  // sllExceptionOS
-    $C080C0,  // sllMemory
-    $C080C0,  // sllStackTrace
-    $4040FF,  // sllFail
-    $B08080,  // sllSQL
-    $B0B080,  // sllCache
-    $8080DC,  // sllResult
-    $80DC80,  // sllDB
-    $DC8080,  // sllHTTP
-    $DCFF00,  // sllClient
-    $DCD000,  // sllServer
-    $DCDC80,  // sllServiceCall
-    $DC80DC,  // sllServiceReturn
-    $DCDCDC,  // sllUserAuth
-    $D0D0D0,  // sllCustom1
-    $D0D0DC,  // sllCustom2
-    $D0D0C0,  // sllCustom3
-    $D0D0E0,  // sllCustom4
-    $20E0D0,  // sllNewRun
-    $8080FF,  // sllDDDError
-    $DCCDCD,  // sllDDDInfo
-    $C0C0C0), // sllMonitoring
+   ($FFFFFF,    // sllNone
+    $DCC0C0,    // sllInfo
+    $DCDCDC,    // sllDebug
+    $C0C0C0,    // sllTrace
+    $8080C0,    // sllWarning
+    $8080FF,    // sllError
+    $C0DCC0,    // sllEnter
+    $DCDCC0,    // sllLeave
+    $C0C0F0,    // sllLastError
+    $C080FF,    // sllException
+    $C080F0,    // sllExceptionOS
+    $C080C0,    // sllMemory
+    $C080C0,    // sllStackTrace
+    $4040FF,    // sllFail
+    $B08080,    // sllSQL
+    $B0B080,    // sllCache
+    $8080DC,    // sllResult
+    $80DC80,    // sllDB
+    $DC8080,    // sllHTTP
+    $DCFF00,    // sllClient
+    $DCD000,    // sllServer
+    $DCDC80,    // sllServiceCall
+    $DC80DC,    // sllServiceReturn
+    $DCDCDC,    // sllUserAuth
+    $D0D0D0,    // sllCustom1
+    $D0D0DC,    // sllCustom2
+    $D0D0C0,    // sllCustom3
+    $D0D0E0,    // sllCustom4
+    $20E0D0,    // sllNewRun
+    $8080FF,    // sllDDDError
+    $DCCDCD,    // sllDDDInfo
+    $C0C0C0),   // sllMonitoring
     // black/white text corresponding to each colored background:
-   ($000000,  // sllNone
-    $000000,  // sllInfo
-    $000000,  // sllDebug
-    $000000,  // sllTrace
-    $000000,  // sllWarning
-    $FFFFFF,  // sllError
-    $000000,  // sllEnter
-    $000000,  // sllLeave
-    $FFFFFF,  // sllLastError
-    $FFFFFF,  // sllException
-    $FFFFFF,  // sllExceptionOS
-    $000000,  // sllMemory
-    $000000,  // sllStackTrace
-    $FFFFFF,  // sllFail
-    $FFFFFF,  // sllSQL
-    $000000,  // sllCache
-    $FFFFFF,  // sllResult
-    $000000,  // sllDB
-    $000000,  // sllHTTP
-    $000000,  // sllClient
-    $000000,  // sllServer
-    $000000,  // sllServiceCall
-    $000000,  // sllServiceReturn
-    $000000,  // sllUserAuth
-    $000000,  // sllCustom1
-    $000000,  // sllCustom2
-    $000000,  // sllCustom3
-    $000000,  // sllCustom4
-    $000000,  // sllNewRun
-    $FFFFFF,  // sllDDDError
-    $000000,  // sllDDDInfo
-    $000000));// sllMonitoring
+   ($000000,    // sllNone
+    $000000,    // sllInfo
+    $000000,    // sllDebug
+    $000000,    // sllTrace
+    $000000,    // sllWarning
+    $FFFFFF,    // sllError
+    $000000,    // sllEnter
+    $000000,    // sllLeave
+    $FFFFFF,    // sllLastError
+    $FFFFFF,    // sllException
+    $FFFFFF,    // sllExceptionOS
+    $000000,    // sllMemory
+    $000000,    // sllStackTrace
+    $FFFFFF,    // sllFail
+    $FFFFFF,    // sllSQL
+    $000000,    // sllCache
+    $FFFFFF,    // sllResult
+    $000000,    // sllDB
+    $000000,    // sllHTTP
+    $000000,    // sllClient
+    $000000,    // sllServer
+    $000000,    // sllServiceCall
+    $000000,    // sllServiceReturn
+    $000000,    // sllUserAuth
+    $000000,    // sllCustom1
+    $000000,    // sllCustom2
+    $000000,    // sllCustom3
+    $000000,    // sllCustom4
+    $000000,    // sllNewRun
+    $FFFFFF,    // sllDDDError
+    $000000,    // sllDDDInfo
+    $000000));  // sllMonitoring
 
   /// console colors corresponding to each logging level
   // - to be used with mormot.core.os TextColor()
+  // - is defined as var and not const to allow customization at runtime
   LOG_CONSOLE_COLORS: array[TSynLogInfo] of TConsoleColor = (
     ccLightGray,    // sllNone
     ccWhite,        // sllInfo
@@ -369,6 +372,7 @@ const
     ccWhite,        // sllDDDInfo
     ccLightBlue);   // sllMonitoring
 
+const
   /// how TLogFilter map TSynLogInfo events
   LOG_FILTER: array[TSynLogFilter] of TSynLogInfos = (
     [],                                                       // lfNone
@@ -4130,7 +4134,6 @@ const
   MAXPREVIOUSCONTENTSIZE = 128 shl 20;
 var
   log: TSynLog;
-  stream: TFileStream;
   endpos, start: Int64;
   c: AnsiChar;
   i, len, read, total: integer;
@@ -4147,47 +4150,43 @@ begin
       if log.fFamily <> self then
         continue;
       log.Writer.FlushToStream;
-      if log.Writer.Stream.InheritsFrom(TFileStream) then
-      begin
-        stream := TFileStream(log.Writer.Stream);
-        endpos := stream.Position;
-        try
-          if endpos > MAXPREVIOUSCONTENTSIZE then
-            len := MAXPREVIOUSCONTENTSIZE
-          else
-            len := MaximumKB shl 10;
-          start := log.fStreamPositionAfterHeader;
-          if (len <> 0) and
-             (endpos - start > len) then
-          begin
-            start := endpos - len;
-            stream.Position := start;
-            repeat
-              inc(start)
-            until (stream.Read(c, 1) = 0) or
-                  (ord(c) in [10, 13]);
-          end
-          else
-            stream.Position := start;
-          len := endpos - start;
-          SetLength(result, len);
-          P := pointer(result);
-          total := 0;
+      endpos := log.Writer.Stream.Position;
+      try
+        if endpos > MAXPREVIOUSCONTENTSIZE then
+          len := MAXPREVIOUSCONTENTSIZE
+        else
+          len := MaximumKB shl 10;
+        start := log.fStreamPositionAfterHeader;
+        if (len <> 0) and
+           (endpos - start > len) then
+        begin
+          start := endpos - len;
+          log.Writer.Stream.Position := start;
           repeat
-            read := stream.Read(P^, len);
-            if read <= 0 then
-            begin
-              if total <> len then
-                SetLength(result, total); // truncate on read error
-              break;
-            end;
-            inc(P, read);
-            dec(len, read);
-            inc(total, read);
-          until len = 0;
-        finally
-          stream.Position := endpos;
-        end;
+            inc(start)
+          until (log.Writer.Stream.Read(c, 1) = 0) or
+                (ord(c) in [10, 13]);
+        end
+        else
+          log.Writer.Stream.Position := start;
+        len := endpos - start;
+        SetLength(result, len);
+        P := pointer(result);
+        total := 0;
+        repeat
+          read := log.Writer.Stream.Read(P^, len);
+          if read <= 0 then
+          begin
+            if total <> len then
+              SetLength(result, total); // truncate on read error
+            break;
+          end;
+          inc(P, read);
+          dec(len, read);
+          inc(total, read);
+        until len = 0;
+      finally
+        log.Writer.Stream.Position := endpos;
       end;
       break;
     end;
@@ -4622,8 +4621,8 @@ begin
   try
     fWriter.FlushToStream;
     if ForceDiskWrite and
-       fWriterStream.InheritsFrom(TFileStream) then
-      diskflush := TFileStream(fWriterStream).Handle;
+       fWriterStream.InheritsFrom(THandleStream) then
+      diskflush := THandleStream(fWriterStream).Handle;
     if AutoFlushThread = nil then
       fFamily.StartAutoFlush;
     fNextFlushTix10 := fFamily.AutoFlushTimeOut;
@@ -5108,7 +5107,7 @@ begin
   begin
     FormatUtf8(Format, Args, Msg);
     Add.LogInternalText(Level, Msg, nil, maxInt);
-    {$ifdef OSWINDOWS}
+    {$ifdef ISDELPHI} // Lazarus/fpdebug does not like "int 3" instructions
     if IsDebuggerPresent then
       {$ifdef CPU64DELPHI}
       DebugBreak;
@@ -5117,9 +5116,9 @@ begin
         int  3
       end;
       {$endif CPU64DELPHI}
-    {$else not OSWINDOWS}
+    {$else not ISDELPHI}
     ConsoleWrite('%  ', [Msg], LOG_CONSOLE_COLORS[Level], {noLF=}true);
-    {$endif OSWINDOWS}
+    {$endif ISDELPHI}
   end;
 end;
 
@@ -6348,7 +6347,8 @@ var
   L: TSynLogInfo;
 begin
   for L := low(TSynLogInfo) to high(TSynLogInfo) do
-    fLogLevelsTextMap[L] := PCardinal(@LOG_LEVEL_TEXT[L][3])^; // [3] -> e.g. 'UST4'
+    // LOG_LEVEL_TEXT[L][3] -> test e.g. 'UST4' chars
+    fLogLevelsTextMap[L] := PCardinal(@LOG_LEVEL_TEXT[L][3])^;
 end;
 
 function TSynLogFile.GetLogLevelFromText(LineBeg: PUtf8Char): TSynLogInfo;

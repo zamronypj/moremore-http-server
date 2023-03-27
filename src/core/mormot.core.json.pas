@@ -656,12 +656,14 @@ type
     function GetTempJsonWriter: TJsonWriter;
     /// append '[' or '{' with proper indentation
     procedure BlockBegin(Starter: AnsiChar; Options: TTextWriterWriteObjectOptions);
+      {$ifdef HASINLINE}inline;{$endif}
     /// append ',' with proper indentation
     // - warning: this will break CancelLastComma, since CRLF+tabs are added
     procedure BlockAfterItem(Options: TTextWriterWriteObjectOptions);
       {$ifdef HASINLINE}inline;{$endif}
     /// append ']' or '}' with proper indentation
     procedure BlockEnd(Stopper: AnsiChar; Options: TTextWriterWriteObjectOptions);
+      {$ifdef HASINLINE}inline;{$endif}
     /// used internally by WriteObject() when serializing a published property
     // - will call AddCRAndIndent then append "PropName":
     procedure WriteObjectPropNameHumanReadable(PropName: PUtf8Char; PropNameLen: PtrInt);
@@ -840,7 +842,8 @@ type
     // - escapes chars according to the JSON RFC
     // - very fast (avoid most temporary storage)
     procedure AddJsonEscape(const V: TVarRec); overload;
-    /// append a UTF-8 JSON String, between double quotes and with JSON escaping
+    /// append a UTF-8 JSON string, JSON escaped between double quotes
+    // - "" will always be added, before calling AddJsonEscape()
     procedure AddJsonString(const Text: RawUtf8);
     /// flush a supplied TJsonWriter, and write pending data as JSON escaped text
     // - may be used with InternalJsonWriter, as a faster alternative to
@@ -1871,7 +1874,8 @@ type
     /// compare two stored values of this type
     function ValueCompare(Data, Other: pointer; CaseInsensitive: boolean): integer; override;
     /// fill a variant with a stored value of this type
-    // - complex objects are converted into a TDocVariant, after JSON serialization
+    // - complex values can be returned as TDocVariant after JSON conversion,
+    // using e.g. @JSON_[mFast] as optional Options parameter
     function ValueToVariant(Data: pointer; out Dest: TVarData;
       Options: pointer{PDocVariantOptions} = nil): PtrInt; override;
     /// unserialize some JSON input into Data^
@@ -2043,7 +2047,6 @@ function SaveJson(const Value; TypeInfo: PRttiInfo;
   {$ifdef HASINLINE}inline;{$endif}
 
 /// serialize most kind of content as JSON, using its RTTI
-// - is just a wrapper around TJsonWriter.AddTypedJson()
 function SaveJson(const Value; TypeInfo: PRttiInfo): RawUtf8; overload;
 
 /// serialize most kind of content as JSON, using its RTTI and a type name
@@ -2122,6 +2125,12 @@ function ObjectToJsonFile(Value: TObject; const JsonFile: TFileName;
 function ObjectToJsonDebug(Value: TObject;
   Options: TTextWriterWriteObjectOptions = [woDontStoreDefault,
     woHumanReadable, woStoreClassName, woStorePointer]): RawUtf8;
+
+/// get any (potentially nested) object property by path
+// - complex values (e.g. dynamic array properties) will be returned as
+// TDocVariant after JSON conversion
+function GetValueObject(Instance: TObject; const Path: RawUtf8;
+  out Value: variant): boolean;
 
 /// unserialize most kind of content as JSON, using its RTTI, as saved by
 // TJsonWriter.AddRecordJson / RecordSaveJson
@@ -2466,6 +2475,8 @@ type
     /// read existing settings from a JSON or INI file file
     function LoadFromFile(const aFileName: TFileName;
       const aSectionName: RawUtf8 = 'Main'): boolean; virtual;
+    /// just a wrapper around ExtractFilePath(FileName);
+    function FolderName: TFileName;
     /// persist the settings as a JSON file, named from LoadFromFile() parameter
     // - will use the INI format if it was used at loading, or fsoWriteIni is set
     procedure SaveIfNeeded; virtual;
@@ -4855,12 +4866,34 @@ end;
 
 { ********** Low-Level JSON Serialization for all TRttiParserType }
 
-// defined here for proper inlining
+// some methods defined here for proper inlining
 procedure TJsonWriter.BlockAfterItem(Options: TTextWriterWriteObjectOptions);
 begin
   AddComma;
   if woHumanReadable in Options then
     AddCRAndIndent;
+end;
+
+procedure TJsonWriter.BlockBegin(Starter: AnsiChar;
+  Options: TTextWriterWriteObjectOptions);
+begin
+  if woHumanReadable in Options then
+  begin
+    AddCRAndIndent;
+    inc(fHumanReadableLevel);
+  end;
+  Add(Starter);
+end;
+
+procedure TJsonWriter.BlockEnd(Stopper: AnsiChar;
+  Options: TTextWriterWriteObjectOptions);
+begin
+  if woHumanReadable in Options then
+  begin
+    dec(fHumanReadableLevel);
+    AddCRAndIndent;
+  end;
+  Add(Stopper);
 end;
 
 
@@ -5028,6 +5061,22 @@ procedure _JS_Unicode(Data: PPWord; const Ctxt: TJsonSaveContext);
 begin
   Ctxt.W.Add('"');
   Ctxt.W.AddJsonEscapeW(Data^);
+  Ctxt.W.Add('"');
+end;
+
+procedure _JS_Char(Data: PAnsiChar; const Ctxt: TJsonSaveContext);
+begin
+  Ctxt.W.Add('"');
+  if Data^ <> #0 then // #0 will be serialized as ""
+    Ctxt.W.AddJsonEscape(Data, 1);
+  Ctxt.W.Add('"');
+end;
+
+procedure _JS_WideChar(Data: PWord; const Ctxt: TJsonSaveContext);
+begin
+  Ctxt.W.Add('"');
+  if Data^ <> 0 then
+    Ctxt.W.AddJsonEscapeW(Data, 1);
   Ctxt.W.Add('"');
 end;
 
@@ -5774,28 +5823,6 @@ begin
   Add('"');
 end;
 
-procedure TJsonWriter.BlockBegin(Starter: AnsiChar;
-  Options: TTextWriterWriteObjectOptions);
-begin
-  if woHumanReadable in Options then
-  begin
-    AddCRAndIndent;
-    inc(fHumanReadableLevel);
-  end;
-  Add(Starter);
-end;
-
-procedure TJsonWriter.BlockEnd(Stopper: AnsiChar;
-  Options: TTextWriterWriteObjectOptions);
-begin
-  if woHumanReadable in Options then
-  begin
-    dec(fHumanReadableLevel);
-    AddCRAndIndent;
-  end;
-  Add(Stopper);
-end;
-
 procedure TJsonWriter.AddCRAndIndent;
 begin
   if fBlockComment <> '' then
@@ -5956,7 +5983,7 @@ begin
       twNone:
         AddNoJsonEscapeW(P, Len);
       twJsonEscape:
-        AddJsonEScapeW(P, Len);
+        AddJsonEscapeW(P, Len);
       twOnSameLine:
         AddOnSameLineW(P, Len);
     end;
@@ -7545,6 +7572,27 @@ begin
     Utf8ToSynUnicode(Ctxt.Value, Ctxt.ValueLen, Data^);
 end;
 
+procedure _JL_Char(Data: PByte; var Ctxt: TJsonParserContext);
+begin
+  if Ctxt.ParseNext then
+    if Ctxt.WasString then
+      if Ctxt.ValueLen <> 0 then
+        Data^ := ord(Ctxt.Value[0]) // get the first char of the input string
+      else
+        Data^ := 0 // _JS_Char serializes #0 as ""
+    else
+      Data^ := GetCardinal(Ctxt.Value); // allow serialization as integer
+end;
+
+procedure _JL_WideChar(Data: PWord; var Ctxt: TJsonParserContext);
+begin
+  if Ctxt.ParseNext then
+    if Ctxt.WasString then
+      Data^ := GetUtf8WideChar(Ctxt.Value)
+    else
+      Data^ := GetCardinal(Ctxt.Value);
+end;
+
 procedure _JL_DateTime(Data: PDateTime; var Ctxt: TJsonParserContext);
 begin
   if Ctxt.ParseNext then
@@ -7834,7 +7882,8 @@ begin
       end;
       if PPointer(Data)^ = nil then // e.g. from _JL_DynArray for T*ObjArray
         PPointer(Data)^ := TRttiJson(Ctxt.Info).fClassNewInstance(Ctxt.Info)
-      else if jpoClearValues in Ctxt.Options then
+      else if (jpoClearValues in Ctxt.Options) and
+              not (rcfClassMayBeID in Ctxt.Info.Flags) then
         Ctxt.Info.Props.FinalizeAndClearPublishedProperties(PPointer(Data)^);
       // class instances are accessed by reference, records are stored by value
       Data := PPointer(Data)^;
@@ -10125,19 +10174,34 @@ begin
     fJsonLoad := @_JL_Binary;
   end
   else
-  begin
-    // default well-known serialization
-    fJsonSave := PTC_JSONSAVE[aParserComplex];
-    if not Assigned(fJsonSave) then
-      fJsonSave := PT_JSONSAVE[aParser];
-    fJsonLoad := PT_JSONLOAD[aParser];
-    // rkRecordTypes serialization with proper fields RTTI
-    if (not Assigned(fJsonSave)) and
-       (Flags * [rcfWithoutRtti, rcfHasNestedProperties] <> []) then
-      fJsonSave := @_JS_RttiCustom;
-   if (not Assigned(fJsonLoad)) and
-      (Flags * [rcfWithoutRtti, rcfHasNestedProperties] <> []) then
-    fJsonLoad := @_JL_RttiCustom
+  case Kind of
+    rkChar:
+      begin
+        fJsonSave := @_JS_Char;
+        fJsonLoad := @_JL_Char;
+        include(fFlags, rcfJsonString);
+      end;
+    rkWChar {$ifdef FPC}, rkUChar {$endif}:
+      begin
+        fJsonSave := @_JS_WideChar;
+        fJsonLoad := @_JL_WideChar;
+        include(fFlags, rcfJsonString);
+      end;
+  else
+    begin
+      // default well-known serialization
+      fJsonSave := PTC_JSONSAVE[aParserComplex];
+      if not Assigned(fJsonSave) then
+        fJsonSave := PT_JSONSAVE[aParser];
+      fJsonLoad := PT_JSONLOAD[aParser];
+      // rkRecordTypes serialization with proper fields RTTI
+      if (not Assigned(fJsonSave)) and
+         (Flags * [rcfWithoutRtti, rcfHasNestedProperties] <> []) then
+        fJsonSave := @_JS_RttiCustom;
+     if (not Assigned(fJsonLoad)) and
+        (Flags * [rcfWithoutRtti, rcfHasNestedProperties] <> []) then
+      fJsonLoad := @_JL_RttiCustom
+    end;
   end;
   // TRttiJson.RegisterCustomSerializer() custom callbacks have priority
   if Assigned(fJsonWriter.Code) then
@@ -10714,16 +10778,8 @@ begin
 end;
 
 function SaveJson(const Value; TypeInfo: PRttiInfo): RawUtf8;
-var
-  temp: TTextWriterStackBuffer;
 begin
-  with TJsonWriter.CreateOwnedStream(temp) do
-  try
-    AddTypedJson(@Value, TypeInfo);
-    SetText(result);
-  finally
-    Free;
-  end;
+  SaveJson(Value, TypeInfo, [], Result, []);
 end;
 
 function SaveJson(const Value; const TypeName: RawUtf8;
@@ -10902,6 +10958,16 @@ function ObjectToJsonDebug(Value: TObject;
 begin
   // our JSON serialization detects and serialize Exception.Message
   result := ObjectToJson(Value, Options);
+end;
+
+function GetValueObject(Instance: TObject; const Path: RawUtf8;
+  out Value: variant): boolean;
+var
+  p: PRttiCustomProp;
+begin
+  result := GetInstanceByPath(Instance, Path, p);
+  if result then
+    p^.GetValueVariant(Instance, TVarData(Value), @JSON_[mFastFloat]);
 end;
 
 function LoadJson(var Value; Json: PUtf8Char; TypeInfo: PRttiInfo;
@@ -11322,6 +11388,14 @@ begin
   result := LoadFromJson(fInitialJsonContent, aSectionName);
   if not result then
     fInitialJsonContent := ''; // file was neither valid JSON nor INI: ignore
+end;
+
+function TSynJsonFileSettings.FolderName: TFileName;
+begin
+  if self = nil then
+    result := ''
+  else
+    result := ExtractFilePath(fFileName);
 end;
 
 procedure TSynJsonFileSettings.SaveIfNeeded;

@@ -50,7 +50,7 @@ type
 
 
 /// extract a line from source array of chars
-// - next will contain the beginning of next line, or nil if source if ended
+// - next will contain the beginning of next line, or nil if source has ended
 function GetNextLine(source: PUtf8Char; out next: PUtf8Char;
   andtrim: boolean = false): RawUtf8;
 
@@ -550,10 +550,12 @@ function FindCsvIndex(Csv: PUtf8Char; const Value: RawUtf8; Sep: AnsiChar = ',';
   CaseSensitive: boolean = true; TrimValue: boolean = false): integer;
 
 /// add the strings in the specified CSV text into a dynamic array of UTF-8 strings
+// - warning: will add the strings, so List := nil may be needed before call
 procedure CsvToRawUtf8DynArray(Csv: PUtf8Char; var List: TRawUtf8DynArray;
   Sep: AnsiChar = ','; TrimItems: boolean = false; AddVoidItems: boolean = false); overload;
 
 /// add the strings in the specified CSV text into a dynamic array of UTF-8 strings
+// - warning: will add the strings, so List := nil may be needed before call
 procedure CsvToRawUtf8DynArray(const Csv, Sep, SepEnd: RawUtf8;
   var List: TRawUtf8DynArray); overload;
 
@@ -1011,7 +1013,7 @@ type
     // - don't escapes chars according to the JSON RFC
     procedure AddNoJsonEscape(P: PAnsiChar; Len: PtrInt; CodePage: cardinal); overload;
     /// append some UTF-8 content to the buffer, with no JSON escape
-    // - if supplied json is '', will write 'null'
+    // - if supplied json is '', will write 'null' so that valid JSON is written
     // - redirect to AddNoJsonEscape() otherwise
     procedure AddRawJson(const json: RawJson);
     /// append a line of text with CR+LF at the end
@@ -1124,7 +1126,7 @@ type
     procedure AddInstancePointer(Instance: TObject; SepChar: AnsiChar;
       IncludeUnitName, IncludePointer: boolean);
     /// append some binary data as hexadecimal text conversion
-    procedure AddBinToHex(Bin: Pointer; BinBytes: PtrInt);
+    procedure AddBinToHex(Bin: Pointer; BinBytes: PtrInt; LowerHex: boolean = false);
     /// fast conversion from binary data into hexa chars, ready to be displayed
     // - using this function with Bin^ as an integer value will serialize it
     // in big-endian order (most-significant byte first), as used by humans
@@ -1276,7 +1278,12 @@ var
 // TRttiJson.RegisterCustomSerializer() class method
 // - call internally TTextWriter.WriteObject() method from DefaultJsonWriter
 function ObjectToJson(Value: TObject;
-  Options: TTextWriterWriteObjectOptions = [woDontStoreDefault]): RawUtf8;
+  Options: TTextWriterWriteObjectOptions = [woDontStoreDefault]): RawUtf8; overload;
+  {$ifdef HASINLINE} inline; {$endif}
+
+/// will serialize any TObject into its UTF-8 JSON representation
+procedure ObjectToJson(Value: TObject; var result: RawUtf8;
+  Options: TTextWriterWriteObjectOptions = [woDontStoreDefault]); overload;
 
 /// check if some UTF-8 text would need HTML escaping
 function NeedsHtmlEscape(text: PUtf8Char; fmt: TTextWriterHtmlFormat): boolean;
@@ -2037,10 +2044,33 @@ procedure FormatShort16(const Format: RawUtf8; const Args: array of const;
 function FormatVariant(const Format: RawUtf8; const Args: array of const): variant;
 
 /// append some text items to a RawUtf8 variable
+// - see also AppendLine() below if you need a separator
 procedure Append(var Text: RawUtf8; const Args: array of const); overload;
+
+/// append one text item to a RawUtf8 variable with no code page conversion
+procedure Append(var Text: RawUtf8; const Added: RawByteString); overload;
+  {$ifdef HASINLINE} inline; {$endif}
+
+/// append two text items to a RawUtf8 variable with no code page conversion
+procedure Append(var Text: RawUtf8; const Added1, Added2: RawByteString); overload;
+
+/// append one char to a RawUtf8 variable with no code page conversion
+procedure Append(var Text: RawUtf8; Added: AnsiChar); overload;
+  {$ifdef HASINLINE} inline; {$endif}
+
+/// append one text buffer to a RawUtf8 variable with no code page conversion
+procedure Append(var Text: RawUtf8; Added: pointer; AddedLen: PtrInt); overload;
+  {$ifdef HASINLINE} inline; {$endif}
 
 /// append some text items to a RawByteString variable
 procedure Append(var Text: RawByteString; const Args: array of const); overload;
+
+/// append one text item to a RawByteString variable with no code page conversion
+procedure Append(var Text: RawByteString; const Added: RawByteString); overload;
+  {$ifdef HASINLINE} inline; {$endif}
+
+/// append one text buffer to a RawByteString variable with no code page conversion
+procedure Append(var Text: RawByteString; Added: pointer; AddedLen: PtrInt); overload;
 
 /// prepend some text items at the beginning of a RawUtf8 variable
 procedure Prepend(var Text: RawUtf8; const Args: array of const); overload;
@@ -4086,8 +4116,10 @@ begin
     P := UnQuoteSqlStringVar(P, result);
     if P = nil then
       result := ''
+    else if P^ = #0 then
+      P := nil
     else
-      inc(P, ord(P^ <> #0));
+      inc(P);
   end
   else
     GetNextItem(P, Sep, result);
@@ -4713,7 +4745,7 @@ var
   n: integer;
 begin
   n := length(List);
-  while Csv <> nil do
+  while (Csv <> nil) and (Csv^ <> #0) do
   begin
     if TrimItems then
       GetNextItemTrimed(Csv, Sep, s)
@@ -4869,7 +4901,7 @@ var
   n: integer;
 begin
   n := length(List);
-  while Csv <> nil do
+  while (Csv <> nil) and (Csv^ <> #0) do
     AddInteger(List, n, GetNextItemInteger(Csv, Sep));
   if List <> nil then
     DynArrayFakeLength(List, n);
@@ -4881,7 +4913,7 @@ var
   n: integer;
 begin
   n := length(List);
-  while Csv <> nil do
+  while (Csv <> nil) and (Csv^ <> #0) do
     AddInt64(List, n, GetNextItemInt64(Csv, Sep));
   if List <> nil then
     DynArrayFakeLength(List, n);
@@ -4892,7 +4924,7 @@ var
   n: integer;
 begin
   n := 0;
-  while Csv <> nil do
+  while (Csv <> nil) and (Csv^ <> #0) do
     AddInt64(result, n, GetNextItemInt64(Csv, Sep));
   if result <> nil then
     DynArrayFakeLength(result, n);
@@ -5713,7 +5745,8 @@ procedure TTextWriter.AddChars(aChar: AnsiChar; aCount: PtrInt);
 var
   n: PtrInt;
 begin
-  repeat
+  while aCount > 0 do
+  begin
     n := BEnd - B;
     if n <= aCount then
     begin
@@ -5725,7 +5758,7 @@ begin
     FillCharFast(B[1], n, ord(aChar));
     inc(B, n);
     dec(aCount, n);
-  until aCount <= 0;
+  end;
 end;
 
 procedure TTextWriter.Add2(Value: PtrUInt);
@@ -6423,7 +6456,7 @@ begin
   AddBinToHexDisplayLower(@P, DisplayMinChars(@P, SizeOf(P)), QuotedChar);
 end;
 
-procedure TTextWriter.AddBinToHex(Bin: Pointer; BinBytes: PtrInt);
+procedure TTextWriter.AddBinToHex(Bin: Pointer; BinBytes: PtrInt; LowerHex: boolean);
 var
   chunk: PtrInt;
 begin
@@ -6438,7 +6471,10 @@ begin
     if BinBytes < chunk then
       chunk := BinBytes;
     // add hexa characters
-    mormot.core.text.BinToHex(PAnsiChar(Bin), PAnsiChar(B), chunk);
+    if LowerHex then
+      mormot.core.text.BinToHexLower(PAnsiChar(Bin), PAnsiChar(B), chunk)
+    else
+      mormot.core.text.BinToHex(PAnsiChar(Bin), PAnsiChar(B), chunk);
     inc(B, chunk * 2);
     inc(PByte(Bin), chunk);
     dec(BinBytes, chunk);
@@ -6831,17 +6867,23 @@ end;
 
 
 function ObjectToJson(Value: TObject; Options: TTextWriterWriteObjectOptions): RawUtf8;
+begin
+  ObjectToJson(Value, result, Options);
+end;
+
+procedure ObjectToJson(Value: TObject; var Result: RawUtf8;
+  Options: TTextWriterWriteObjectOptions);
 var
   temp: TTextWriterStackBuffer;
 begin
   if Value = nil then
-    result := NULL_STR_VAR
+    Result := NULL_STR_VAR
   else
     with DefaultJsonWriter.CreateOwnedStream(temp) do
     try
       include(fCustomOptions, twoForceJsonStandard);
       WriteObject(Value, Options);
-      SetText(result);
+      SetText(Result);
     finally
       Free;
     end;
@@ -9368,6 +9410,16 @@ begin
           wasString := true;
           RawUnicodeToUtf8(VAny, length(WideString(VAny)), result);
         end;
+      varOlePAnsiChar: // = VT_LPSTR
+        begin
+          wasString := true;
+          CurrentAnsiConvert.AnsiBufferToRawUtf8(VString, StrLen(VString), result);
+        end;
+      varOlePWideChar: // = VT_LPWSTR
+        begin
+          wasString := true;
+          RawUnicodeToUtf8(VAny, StrLenW(VAny), result);
+        end;
     else
       if SetVariantUnRefSimpleValue(V, tmp{%H-}) then
         // simple varByRef
@@ -10355,6 +10407,59 @@ var
   f: TFormatUtf8;
 begin
   {%H-}f.DoAppendLine(RawUtf8(Text), @Args[0], length(Args), '');
+  if Text <> '' then
+    FakeCodePage(Text, CP_RAWBYTESTRING);
+end;
+
+procedure Append(var Text: RawUtf8; const Added: RawByteString);
+begin
+  if Added <> '' then
+    Append(Text, pointer(Added), PStrLen(PtrUInt(Added) - _STRLEN)^);
+end;
+
+procedure Append(var Text: RawUtf8; const Added1, Added2: RawByteString);
+var
+  l, a1, a2: PtrInt;
+begin
+  l := length(Text);
+  a1 := length(Added1);
+  a2 := length(Added2);
+  SetLength(Text, l + a1 + a2);
+  MoveFast(pointer(Added1)^, PByteArray(Text)[l], a1);
+  MoveFast(pointer(Added2)^, PByteArray(Text)[l + a1], a2);
+end;
+
+procedure Append(var Text: RawUtf8; Added: AnsiChar);
+begin
+  Append(Text, @Added, 1);
+end;
+
+procedure Append(var Text: RawUtf8; Added: pointer; AddedLen: PtrInt);
+var
+  t: PtrInt;
+begin
+  if (Added = nil) or (AddedLen <= 0) then
+    exit;
+  t := length(Text);
+  SetLength(Text, t + AddedLen);
+  MoveFast(pointer(Added)^, PByteArray(Text)[t], AddedLen);
+end;
+
+procedure Append(var Text: RawByteString; const Added: RawByteString);
+begin
+  if Added <> '' then
+    Append(Text, pointer(Added), PStrLen(PtrUInt(Added) - _STRLEN)^);
+end;
+
+procedure Append(var Text: RawByteString; Added: pointer; AddedLen: PtrInt);
+var
+  t: PtrInt;
+begin
+  if (Added = nil) or (AddedLen <= 0) then
+    exit;
+  t := length(Text);
+  SetLength(Text, t + AddedLen);
+  MoveFast(Added^, PByteArray(Text)^[t], AddedLen);
   if Text <> '' then
     FakeCodePage(Text, CP_RAWBYTESTRING);
 end;

@@ -1564,6 +1564,9 @@ type
     procedure FastDeleteSorted(Index: PtrInt);
     /// will reverse all array items, in place
     procedure Reverse;
+    /// will call FillZero() on all items, mainly binaries and strings
+    // - could be used on a dynamic array to avoid memory forensic after release
+    procedure FillZero;
     /// sort the dynamic array items using a lookup array of indexes
     // - in comparison to the Sort method, this CreateOrderedIndex won't change
     // the dynamic array content, but only create (or update) the supplied
@@ -2599,6 +2602,8 @@ type
       aText: PUtf8Char; aTextLen: PtrInt; aTextHash: cardinal);
     /// ensure the supplied RawUtf8 value is interned
     procedure UniqueText(var aText: RawUtf8; aTextHash: cardinal);
+    /// return the interned value, if any
+    function Existing(const aText: RawUtf8; aTextHash: cardinal): pointer;
     /// delete all stored RawUtf8 values
     procedure Clear;
     /// reclaim any unique RawUtf8 values
@@ -2628,6 +2633,11 @@ type
     // - if aText does exist in the internal string pool, return the shared
     // instance (with its reference counter increased), to reduce memory usage
     function Unique(const aText: RawUtf8): RawUtf8; overload;
+    /// check if a RawUtf8 value is already stored within this class
+    // - if not existing, returns nil and don't add it to the pool
+    // - if existing, returns pointer(fValue[i]) of the unique stored RawUtf8
+    // - use e.g. for very fast per-pointer lookup of interned property names
+    function Existing(const aText: RawUtf8): pointer;
     /// return a RawUtf8 variable stored within this class from a text buffer
     // - if aText occurs for the first time, add it to the internal string pool
     // - if aText does exist in the internal string pool, return the shared
@@ -2686,14 +2696,14 @@ type
     fCaseSensitive,
     fNoDuplicate,
     fOnChangeTrigerred,
-    fNoThreadLock);
+    fThreadSafe);
 
   /// thread-safe TStringList-class optimized for our native UTF-8 string type
   // - can optionally store associated some TObject instances
   // - high-level methods of this class are thread-safe
   // - if fNoDuplicate flag is defined, an internal hash table will be
   // maintained to perform IndexOf() lookups in O(1) linear way
-  // - thread-safe by default (via a light TRWLock), unless fNoThreadLock is set
+  // - not thread-safe by default, unless fThreadSafe is set to use the TRWLock
   TRawUtf8List = class(TSynPersistentRWLock)
   protected
     fCount: PtrInt;
@@ -2732,6 +2742,9 @@ type
     procedure Changed; virtual;
     procedure InternalDelete(Index: PtrInt);
     procedure OnChangeHidden(Sender: TObject);
+    {$ifndef PUREMORMOT2}
+    procedure SetDefaultFlags; virtual;
+    {$endif PUREMORMOT2}
   public
     /// initialize the RawUtf8/Objects storage with [fCaseSensitive] flags
     constructor Create; overload; override;
@@ -2740,13 +2753,15 @@ type
     // you may supply fOwnObjects flag to force object instance management
     // - if you want the stored text items to be unique, set fNoDuplicate
     // and then an internal hash table will be maintained for fast IndexOf()
-    // - you can unset fCaseSensitive to let the UTF-8 lookup be case-insensitive
+    // - you can set fCaseSensitive to let the UTF-8 lookup be case-sensitive
+    // - not thread-safe by default, unless fThreadSafe is set to use a R/W lock
     // - is defined as CreateEx instead of overload Create to avoid weird Delphi
     // compilation issues, especially within packages
     constructor CreateEx(aFlags: TRawUtf8ListFlags);
     {$ifndef PUREMORMOT2}
     /// backward compatiliby overloaded constructor
     // - please rather use the overloaded CreateEx(TRawUtf8ListFlags)
+    // - for instance, Create(true) is CreateEx([fObjectsOwned, fCaseSensitive]);
     constructor Create(aOwnObjects: boolean; aNoDuplicate: boolean = false;
       aCaseSensitive: boolean = true); reintroduce; overload;
     {$endif PUREMORMOT2}
@@ -2968,10 +2983,12 @@ type
 {$ifndef PUREMORMOT2}
 
   // some declarations used for backward compatibility only
-  TRawUtf8ListLocked = type TRawUtf8List;
-  TRawUtf8ListHashed = type TRawUtf8List;
-  TRawUtf8ListHashedLocked = type TRawUtf8ListHashed;
-
+  TRawUtf8ListLocked = class(TRawUtf8List)
+    protected procedure SetDefaultFlags; override; end;
+  TRawUtf8ListHashed = class(TRawUtf8List)
+    protected procedure SetDefaultFlags; override; end;
+  TRawUtf8ListHashedLocked = class(TRawUtf8ListHashed)
+    protected procedure SetDefaultFlags; override; end;
   // deprecated TRawUtf8MethodList should be replaced by a TSynDictionary
 
 {$endif PUREMORMOT2}
@@ -4648,6 +4665,18 @@ begin
   fSafe.WriteUnLock;
 end;
 
+function TRawUtf8InterningSlot.Existing(const aText: RawUtf8; aTextHash: cardinal): pointer;
+var
+  i: PtrInt;
+begin
+  result := nil;
+  fSafe.ReadLock;
+  i := fValues.Hasher.FindOrNewComp(aTextHash, @aText);
+  if i >= 0 then
+    result := pointer(fValue[i]); // return a pointer to unified string instance
+  fSafe.ReadUnLock;
+end;
+
 procedure TRawUtf8InterningSlot.Clear;
 begin
   fSafe.WriteLock;
@@ -4801,6 +4830,17 @@ begin
   end;
 end;
 
+function TRawUtf8Interning.Existing(const aText: RawUtf8): pointer;
+var
+  hash: cardinal;
+begin
+  result := nil;
+  if self = nil then
+    exit;
+  hash := InterningHasher(0, pointer(aText), length(aText));
+  result := fPool[hash and fPoolLast].Existing(aText, hash);
+end;
+
 function TRawUtf8Interning.Unique(aText: PUtf8Char; aTextLen: PtrInt): RawUtf8;
 begin
   Unique(result, aText, aTextLen);
@@ -4857,14 +4897,21 @@ end;
 
 { TRawUtf8List }
 
+{$ifdef PUREMORMOT2}
 constructor TRawUtf8List.Create;
 begin
   CreateEx([fCaseSensitive]);
 end;
+{$else}
+constructor TRawUtf8List.Create;
+begin
+  SetDefaultFlags;
+  CreateEx(fFlags + [fCaseSensitive]);
+end;
 
-{$ifndef PUREMORMOT2}
 constructor TRawUtf8List.Create(aOwnObjects, aNoDuplicate, aCaseSensitive: boolean);
 begin
+  SetDefaultFlags;
   if aOwnObjects then
     include(fFlags, fObjectsOwned);
   if aNoDuplicate then
@@ -4872,6 +4919,22 @@ begin
   if aCaseSensitive then
     include(fFlags, fCaseSensitive);
   CreateEx(fFlags);
+end;
+
+procedure TRawUtf8List.SetDefaultFlags;
+begin
+end;
+procedure TRawUtf8ListLocked.SetDefaultFlags;
+begin
+  fFlags := [fThreadSafe];
+end;
+procedure TRawUtf8ListHashed.SetDefaultFlags;
+begin
+  fFlags := [fNoDuplicate];
+end;
+procedure TRawUtf8ListHashedLocked.SetDefaultFlags;
+begin
+  fFlags := [fNoDuplicate, fThreadSafe];
 end;
 {$endif PUREMORMOT2}
 
@@ -4895,7 +4958,7 @@ begin
   if (self = nil) or
      (fCaseSensitive in fFlags = Value) then
     exit;
-  if not (fNoThreadLock in fFlags) then
+  if fThreadSafe in fFlags then
     fSafe.WriteLock;
   try
     if Value then
@@ -4905,7 +4968,7 @@ begin
     fValues.Hasher.InitSpecific(@fValues, ptRawUtf8, not Value, nil);
     Changed;
   finally
-    if not (fNoThreadLock in fFlags) then
+    if fThreadSafe in fFlags then
       fSafe.WriteUnLock;
   end;
 end;
@@ -4914,7 +4977,7 @@ procedure TRawUtf8List.SetCapacity(const capa: PtrInt);
 begin
   if self <> nil then
   begin
-    if not (fNoThreadLock in fFlags) then
+    if fThreadSafe in fFlags then
       fSafe.WriteLock;
     try
       if capa <= 0 then
@@ -4957,7 +5020,7 @@ begin
         end;
       end;
     finally
-      if not (fNoThreadLock in fFlags) then
+      if fThreadSafe in fFlags then
         fSafe.WriteUnLock;
     end;
   end;
@@ -4978,7 +5041,7 @@ begin
   result := -1;
   if self = nil then
     exit;
-  if not (fNoThreadLock in fFlags) then
+  if fThreadSafe in fFlags then
     fSafe.WriteLock;
   try
     if fNoDuplicate in fFlags then
@@ -5022,7 +5085,7 @@ begin
     if Assigned(fOnChange) then
       Changed;
   finally
-    if not (fNoThreadLock in fFlags) then
+    if fThreadSafe in fFlags then
       fSafe.WriteUnLock;
   end;
 end;
@@ -5060,7 +5123,7 @@ procedure TRawUtf8List.BeginUpdate;
 begin
   if InterLockedIncrement(fOnChangeLevel) > 1 then
     exit;
-  if not (fNoThreadLock in fFlags) then
+  if fThreadSafe in fFlags then
     fSafe.WriteLock;
   fOnChangeBackupForBeginUpdate := fOnChange;
   fOnChange := OnChangeHidden;
@@ -5077,7 +5140,7 @@ begin
      Assigned(fOnChange) then
     Changed;
   exclude(fFlags, fOnChangeTrigerred);
-  if not (fNoThreadLock in fFlags) then
+  if fThreadSafe in fFlags then
     fSafe.WriteUnLock;
 end;
 
@@ -5124,7 +5187,7 @@ end;
 
 function TRawUtf8List.Delete(const aText: RawUtf8): PtrInt;
 begin
-  if not (fNoThreadLock in fFlags) then
+  if fThreadSafe in fFlags then
     fSafe.WriteLock;
   try
     if fNoDuplicate in fFlags then
@@ -5134,7 +5197,7 @@ begin
     if result >= 0 then
       InternalDelete(result);
   finally
-    if not (fNoThreadLock in fFlags) then
+    if fThreadSafe in fFlags then
       fSafe.WriteUnLock;
   end;
 end;
@@ -5142,18 +5205,18 @@ end;
 function TRawUtf8List.DeleteFromName(const Name: RawUtf8): PtrInt;
 begin
   result := -1;
-  if not (fNoThreadLock in fFlags) then
+  if fThreadSafe in fFlags then
     fSafe.ReadWriteLock;
   try
     result := IndexOfName(Name);
     if result >= 0 then
     begin
-      if not (fNoThreadLock in fFlags) then
+      if fThreadSafe in fFlags then
         fSafe.WriteLock;
       Delete(result);
     end;
   finally
-    if not (fNoThreadLock in fFlags) then
+    if fThreadSafe in fFlags then
     begin
       if result >= 0 then
         fSafe.WriteUnlock;
@@ -5165,9 +5228,7 @@ end;
 function TRawUtf8List.Exists(const aText: RawUtf8): boolean;
 begin
   if self <> nil then
-    if fNoThreadLock in fFlags then
-      result := IndexOf(aText) >= 0
-    else
+    if fThreadSafe in fFlags then
     begin
       fSafe.ReadOnlyLock;
       try
@@ -5176,6 +5237,8 @@ begin
         fSafe.ReadOnlyUnLock;
       end;
     end
+    else
+      result := IndexOf(aText) >= 0
   else
     result := false;
 end;
@@ -5265,14 +5328,14 @@ begin
   if (self <> nil) and
      (fObjects <> nil) then
   begin
-    if not (fNoThreadLock in fFlags) then
+    if fThreadSafe in fFlags then
       fSafe.ReadOnlyLock;
     try
       ndx := IndexOf(aText);
       if ndx < PtrUInt(fCount) then
         result := fObjects[ndx];
     finally
-      if not (fNoThreadLock in fFlags) then
+      if fThreadSafe in fFlags then
         fSafe.ReadOnlyUnLock;
     end;
   end;
@@ -5287,7 +5350,7 @@ begin
   if (self = nil) or
      (fCount = 0) then
     exit;
-  if not (fNoThreadLock in fFlags) then
+  if fThreadSafe in fFlags then
     fSafe.ReadOnlyLock;
   try
     DelimLen := length(Delimiter);
@@ -5314,7 +5377,7 @@ begin
       end;
     until false;
   finally
-    if not (fNoThreadLock in fFlags) then
+    if fThreadSafe in fFlags then
       fSafe.ReadOnlyUnLock;
   end;
 end;
@@ -5328,7 +5391,7 @@ begin
   if (self = nil) or
      (fCount = 0) then
     exit;
-  if not (fNoThreadLock in fFlags) then
+  if fThreadSafe in fFlags then
     fSafe.ReadOnlyLock;
   try
     W := TTextWriter.Create(Dest, @temp, SizeOf(temp));
@@ -5346,7 +5409,7 @@ begin
       W.Free;
     end;
   finally
-    if not (fNoThreadLock in fFlags) then
+    if fThreadSafe in fFlags then
       fSafe.ReadOnlyUnLock;
   end;
 end;
@@ -5371,12 +5434,12 @@ end;
 
 function TRawUtf8List.GetValue(const Name: RawUtf8): RawUtf8;
 begin
-  if not (fNoThreadLock in fFlags) then
+  if fThreadSafe in fFlags then
     fSafe.ReadOnlyLock;
   try
     result := GetValueAt(IndexOfName(Name));
   finally
-    if not (fNoThreadLock in fFlags) then
+    if fThreadSafe in fFlags then
       fSafe.ReadOnlyUnLock;
   end;
 end;
@@ -5414,12 +5477,12 @@ begin
   if (self <> nil) and
      (fObjects <> nil) then
   begin
-    if not (fNoThreadLock in fFlags) then
+    if fThreadSafe in fFlags then
       fSafe.ReadOnlyLock;
     try
       result := PtrUIntScanIndex(pointer(fObjects), fCount, PtrUInt(aObject));
     finally
-      if not (fNoThreadLock in fFlags) then
+      if fThreadSafe in fFlags then
         fSafe.ReadOnlyUnLock;
     end
   end
@@ -5434,7 +5497,7 @@ begin
   result := -1;
   if self = nil then
     exit;
-  if not (fNoThreadLock in fFlags) then
+  if fThreadSafe in fFlags then
     fSafe.ReadOnlyLock;
   try
     for i := aFirstIndex to fCount - 1 do
@@ -5444,7 +5507,7 @@ begin
         exit;
       end;
   finally
-    if not (fNoThreadLock in fFlags) then
+    if fThreadSafe in fFlags then
       fSafe.ReadOnlyUnLock;
   end;
 end;
@@ -5560,7 +5623,7 @@ var
   txt: RawUtf8;
 begin
   txt := Name + RawUtf8(NameValueSep) + Value;
-  if not (fNoThreadLock in fFlags) then
+  if fThreadSafe in fFlags then
     fSafe.WriteLock;
   try
     i := IndexOfName(Name);
@@ -5574,7 +5637,7 @@ begin
       Changed;
     end;
   finally
-    if not (fNoThreadLock in fFlags) then
+    if fThreadSafe in fFlags then
       fSafe.WriteUnLock;
   end;
 end;
@@ -5597,7 +5660,7 @@ var
   i: PtrInt;
 begin
   result := false;
-  if not (fNoThreadLock in fFlags) then
+  if fThreadSafe in fFlags then
     fSafe.WriteLock;
   try
     i := IndexOfName(Name);
@@ -5609,7 +5672,7 @@ begin
       result := true;
     end;
   finally
-    if not (fNoThreadLock in fFlags) then
+    if fThreadSafe in fFlags then
       fSafe.WriteUnLock;
   end;
 end;
@@ -5619,7 +5682,7 @@ begin
   result := false;
   if fCount = 0 then
     exit;
-  if not (fNoThreadLock in fFlags) then
+  if fThreadSafe in fFlags then
     fSafe.WriteLock;
   try
     if fCount > 0 then
@@ -5634,7 +5697,7 @@ begin
       result := true;
     end;
   finally
-    if not (fNoThreadLock in fFlags) then
+    if fThreadSafe in fFlags then
       fSafe.WriteUnLock;
   end;
 end;
@@ -5646,7 +5709,7 @@ begin
   result := false;
   if fCount = 0 then
     exit;
-  if not (fNoThreadLock in fFlags) then
+  if fThreadSafe in fFlags then
     fSafe.WriteLock;
   try
     last := fCount - 1;
@@ -5662,7 +5725,7 @@ begin
       result := true;
     end;
   finally
-    if not (fNoThreadLock in fFlags) then
+    if fThreadSafe in fFlags then
       fSafe.WriteUnLock;
   end;
 end;
@@ -7506,6 +7569,18 @@ begin
   end;
 end;
 
+procedure TDynArray.FillZero;
+var
+  n: integer;
+begin
+  n := GetCount;
+  if n <> 0 then
+    if not (rcfArrayItemManaged in fInfo.Flags) then
+      FillCharFast(fValue^^, n * fInfo.Cache.ItemSize, 0) // e.g. THash256
+    else
+      FillZeroRtti(fInfo.Cache.ItemInfo, fValue^^);
+end;
+
 procedure TDynArray.SaveTo(W: TBufferWriter);
 begin
   DynArraySave(pointer(fValue), fCountP, W, Info.Info);
@@ -8850,7 +8925,7 @@ begin
   else
   begin
     dec(n, Offset);
-    if Limit >= n  then
+    if Limit > n  then
       Limit := n;
   end;
   dst.InitRtti(fInfo, Dest);
@@ -11166,13 +11241,13 @@ begin
     else // regular <param>
       while (P^ <> #0) and (P^ <> '?') and (P^ <> '/') do
         inc(P);
-    if not LookupParam(Ctxt, c, P - c) then
+    if (Ctxt <> nil) and not LookupParam(Ctxt, c, P - c) then
       exit; // the parameter is not in the expected format for Ctxt
   end;
   // if we reached here, the URI do match up to now
   if (P^ = #0) or (P^ = '?') then
   begin
-    if P^ = '?' then
+    if (P^ = '?') and (Ctxt <> nil) then
       LookupParam(Ctxt, P, -1); // store the inlined parameters position in Ctxt
     result := self; // exact match found for this entry (excluding URI params)
     exit;

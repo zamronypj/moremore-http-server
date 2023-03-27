@@ -727,6 +727,14 @@ procedure FastAssignNew(var d; s: pointer = nil);
 function FastNewString(len, codepage: PtrInt): PAnsiChar;
   {$ifdef HASINLINE}inline;{$endif}
 
+/// ensure the supplied variable will have a CP_UTF8 - making it unique if needed
+procedure EnsureRawUtf8(var s: RawByteString); overload;
+  {$ifdef HASINLINE}inline;{$endif}
+
+/// ensure the supplied variable will have a CP_UTF8 - making it unique if needed
+procedure EnsureRawUtf8(var s: RawUtf8); overload;
+  {$ifdef HASINLINE}inline;{$endif}
+
 /// internal function which could be used instead of SetLength() if RefCnt = 1
 procedure FakeLength(var s: RawUtf8; len: PtrInt); overload;
   {$ifdef HASINLINE} inline; {$endif}
@@ -1850,6 +1858,12 @@ procedure RawObjectsClear(o: PObject; n: integer);
 /// same as FreeAndNil() but catching and ignoring any exception
 // - only difference is that aObj is set to nil AFTER being destroyed
 procedure FreeAndNilSafe(var aObj);
+
+/// same as aInterface := nil but ignoring any exception
+procedure InterfaceNilSafe(var aInterface);
+
+/// same as aInterface := nil but ignoring any exception
+procedure InterfacesNilSafe(const aInterfaces: array of pointer);
 
 /// wrapper to add an item to a T*InterfaceArray dynamic array storage
 function InterfaceArrayAdd(var aInterfaceArray; const aItem: IUnknown): PtrInt;
@@ -3245,18 +3259,21 @@ function xxHash32Mixup(crc: cardinal): cardinal;
   {$ifdef HASINLINE}inline;{$endif}
 
 const
-  /// Knuth's magic number for hashing a cardinal, using the golden ratio
+  /// Knuth's magic number for hashing a 32-bit value, using the golden ratio
   // - then use the result high bits, i.e. via "shr" not via "and"
   // - for instance, mormot.core.log uses it to hash the TThreadID:
   // $ hash := cardinal(cardinal(id) * KNUTH_HASH32_MUL) shr (32 - MAXLOGTHREADBITS);
   KNUTH_HASH32_MUL = $9E3779B1;
 
+  /// Knuth's magic number for hashing a 64-bit value, using the golden ratio
+  KNUTH_HASH64_MUL = $9E3779B97F4A7C15;
+
   /// Knuth's magic number for hashing a PtrUInt, using the golden ratio
   {$ifdef CPU32}
-  KNUTH_HASHPTR_MUL = $9E3779B1;
+  KNUTH_HASHPTR_MUL = KNUTH_HASH32_MUL;
   KNUTH_HASHPTR_SHR = 32;
   {$else}
-  KNUTH_HASHPTR_MUL = $9E3779B97F4A7C15;
+  KNUTH_HASHPTR_MUL = KNUTH_HASH64_MUL;
   KNUTH_HASHPTR_SHR = 64;
   {$endif CPU32}
 
@@ -3396,6 +3413,21 @@ const
   // - currently called varUInt64 in Delphi (not defined in older versions),
   // and varQWord in FPC
   varWord64 = 21;
+  /// map the Windows VT_INT extended VARENUM, i.e. a 32-bit signed integer
+  // - also detected and handled by VariantToInteger/VariantToInt64
+  varOleInt = 22;
+  /// map the Windows VT_UINT extended VARENUM, i.e. a 32-bit unsigned integer
+  // - also detected and handled by VariantToInteger/VariantToInt64
+  varOleUInt = 23;
+  /// map the Windows VT_LPSTR extended VARENUM, i.e. a PAnsiChar
+  // - also detected and handled by VariantToUtf8
+  varOlePAnsiChar = 30;
+  /// map the Windows VT_LPWSTR extended VARENUM, i.e. a PWideChar
+  // - also detected and handled by VariantToUtf8
+  varOlePWideChar = 31;
+  /// map the Windows VT_LPWSTR extended VARENUM, i.e. a 64-bit TFileTime
+  // - also detected and handled by VariantToDateTime
+  varOleFileTime = 64;
 
   varVariantByRef = varVariant or varByRef;
   varStringByRef = varString or varByRef;
@@ -3423,7 +3455,11 @@ const
   {$endif ISDELPHI}
 
   /// those TVarData.VType values are meant to be direct values
-  VTYPE_SIMPLE = [varEmpty..varDate, varBoolean, varShortInt..varWord64, varUnknown];
+  VTYPE_SIMPLE = [varEmpty..varDate, varBoolean, varShortInt..varWord64,
+    {$ifdef OSWINDOWS} varOleInt, varOleUInt, varOlePAnsiChar, varOlePWideChar,
+      varOleFileTime, {$endif OSWINDOWS} varUnknown];
+  /// bitmask used by our inlined VarClear() to avoid unneeded VarClearProc()
+  VTYPE_STATIC = $BFE8;
 
   /// a slightly faster alternative to Variants.Null function with TVarData
   NullVarData:  TVarData = (VType: varNull{%H-});
@@ -3736,6 +3772,7 @@ type
     procedure SetSize(NewSize: Longint); override;
   public
     /// initialize the storage, optionally with some RawByteString content
+    // - to be used for Read() from this memory buffer
     constructor Create(const aString: RawByteString); overload;
     /// read some bytes from the internal storage
     // - returns the number of bytes filled into Buffer (<=Count)
@@ -3927,9 +3964,6 @@ uses
 
 
 { ************ Common Types Used for Compatibility Between Compilers and CPU }
-
-const
-  VTYPE_STATIC = $BFE8; // bitmask to avoid unneeded VarClearProc call
 
 procedure VarClearAndSetType(var v: variant; vtype: integer);
 var
@@ -4250,6 +4284,23 @@ begin
 end;
 
 {$ifdef HASCODEPAGE}
+
+procedure EnsureRawUtf8(var s: RawByteString);
+begin
+  if s <> '' then
+    with PStrRec(PAnsiChar(pointer(s)) - _STRRECSIZE)^ do
+      if CodePage <> CP_UTF8 then
+        if refCnt <> 1 then
+          FastSetString(RawUtf8(s), pointer(s), length) // make copy
+        else
+          CodePage := CP_UTF8; // just replace in-place
+end;
+
+procedure EnsureRawUtf8(var s: RawUtf8);
+begin
+  EnsureRawUtf8(RawByteString(s));
+end;
+
 procedure FakeCodePage(var s: RawByteString; cp: cardinal);
 var
   p: PAnsiChar;
@@ -4263,9 +4314,16 @@ function GetCodePage(const s: RawByteString): cardinal;
 begin
   result := PStrRec(PAnsiChar(pointer(s)) - _STRRECSIZE)^.CodePage;
 end;
-{$else}
+
+{$else} // do nothing on Delphi 7-2007
 procedure FakeCodePage(var s: RawByteString; cp: cardinal);
-begin // do nothing on Delphi 7-2007
+begin
+end;
+procedure EnsureRawUtf8(var s: RawByteString);
+begin
+end;
+procedure EnsureRawUtf8(var s: RawUtf8);
+begin
 end;
 {$endif HASCODEPAGE}
 
@@ -7171,6 +7229,24 @@ begin
   except
   end;
   TObject(aObj) := nil; // we could do it AFTER destroy
+end;
+
+procedure InterfaceNilSafe(var aInterface);
+begin
+  if IInterface(aInterface) <> nil then
+    try // slower but paranoidically safe
+      IInterface(aInterface) := nil;
+    except
+      pointer(aInterface) := nil; // force variable to nil
+    end;
+end;
+
+procedure InterfacesNilSafe(const aInterfaces: array of pointer);
+var
+  i: PtrInt;
+begin
+  for i := 0 to high(aInterfaces) do
+    InterfaceNilSafe(aInterfaces[i]^);
 end;
 
 procedure ObjArrayClear(var aObjArray);
@@ -10893,14 +10969,16 @@ begin
         Value := vd^.VShortInt;
       varWord:
         Value := vd^.VWord;
-      varLongWord:
+      varLongWord,
+      varOleUInt:
         if vd^.VLongWord <= cardinal(High(integer)) then
           Value := vd^.VLongWord
         else
           exit;
       varByte:
         Value := vd^.VByte;
-      varInteger:
+      varInteger,
+      varOleInt:
         Value := vd^.VInteger;
       varWord64:
         if (vd^.VInt64 >= 0) and
@@ -11069,11 +11147,13 @@ begin
         Value := vd^.VShortInt;
       varWord:
         Value := vd^.VWord;
-      varLongWord:
+      varLongWord,
+      varOleUInt:
         Value := vd^.VLongWord;
       varByte:
         Value := vd^.VByte;
-      varInteger:
+      varInteger,
+      varOleInt:
         Value := vd^.VInteger;
       varWord64:
         if vd^.VInt64 >= 0 then
@@ -11123,9 +11203,7 @@ begin
   if Txt = '' then
     exit;
   RawUtf8(TVarData(Value).VAny) := Txt;
-  {$ifdef HASCODEPAGE} // Txt may be read-only: no FastAssignUtf8/FakeCodePage
-  SetCodePage(RawByteString(TVarData(Value).VAny), CP_UTF8, false);
-  {$endif HASCODEPAGE}
+  EnsureRawUtf8(RawByteString(TVarData(Value).VAny));
 end;
 
 function RawUtf8ToVariant(const Txt: RawUtf8): variant;
@@ -11521,7 +11599,11 @@ begin
   L := length(fDataString);
   if (StartPos = 0) and
      (Len = L) then
-    FastAssignUtf8(Text, fDataString) // FPC expects this
+  begin
+    Text := fDataString;
+    fDataString := ''; // release it ASAP to avoid multi-threading reuse bug
+    EnsureRawUtf8(Text);
+  end
   else
   begin
     if Len - StartPos > L then

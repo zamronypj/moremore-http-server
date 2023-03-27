@@ -34,6 +34,7 @@ uses
   mormot.core.rtti,
   mormot.core.datetime,
   mormot.core.zip,
+  mormot.core.json,
   mormot.net.sock,
   mormot.net.http,
   {$ifdef USEWININET}
@@ -205,13 +206,19 @@ type
     /// perform URI parsing and rewrite/execution within HTTP server Ctxt members
     // - should return 0 to continue the process, on a HTTP status code to abort
     // if the request has been handled by a TOnHttpServerRequest callback
+    // - this method is thread-safe
     function Process(Ctxt: THttpServerRequestAbstract): integer;
+    /// search for a given URI match
+    // - could be used e.g. in OnBeforeBody() to quickly reject an invalid URI
+    // - this method is thread-safe
+    function Lookup(const aUri, aUriMethod: RawUtf8): TUriTreeNode;
     /// erase all previous registrations, optionally for a given HTTP method
     // - currently, there is no way to delete a route once registered, to
     // optimize the process thread-safety: use Clear then re-register
     procedure Clear(aMethods: TUriRouterMethods = [urmGet .. high(TUriRouterMethod)]);
     /// access to the internal per-method TUriTree instance
     // - some Tree[] may be nil if the HTTP method has not been registered yet
+    // - used only for testing/validation purpose
     property Tree: TUriRouterTree
       read fTree;
     /// how the TUriRouter instance should be created
@@ -296,6 +303,12 @@ type
       CompressGz, MaxSizeAtOnce: integer): PRawByteStringBuffer;
     /// just a wrapper around fErrorMessage := FormatString()
     procedure SetErrorMessage(const Fmt: RawUtf8; const Args: array of const);
+    /// serialize a given value as JSON into OutContent and OutContentType fields
+    procedure SetOutJson(Value: pointer; TypeInfo: PRttiInfo); overload;
+      {$ifdef HASINLINE} inline; {$endif}
+    /// serialize a given TObject as JSON into OutContent and OutContentType fields
+    procedure SetOutJson(Value: TObject); overload;
+      {$ifdef HASINLINE} inline; {$endif}
     /// the associated server instance
     // - may be a THttpServer or a THttpApiServer class
     property Server: THttpServerGeneric
@@ -399,6 +412,7 @@ type
     function NextConnectionID: integer; // 31-bit internal sequence
     procedure ParseRemoteIPConnID(const Headers: RawUtf8;
       var RemoteIP: RawUtf8; var RemoteConnID: THttpServerConnectionID);
+      {$ifdef HASINLINE}inline;{$endif}
     procedure AppendHttpDate(var Dest: TRawByteStringBuffer); virtual;
     function GetFavIcon(Ctxt: THttpServerRequestAbstract): cardinal;
   public
@@ -684,6 +698,9 @@ type
     // - returned enumeration will indicates the processing state
     function GetRequest(withBody: boolean;
       headerMaxTix: Int64): THttpServerSocketGetRequestResult; virtual;
+    /// access to the internal two PtrUInt tags of this connection
+    function GetConnectionOpaque: PHttpServerConnectionOpaque;
+      {$ifdef HASINLINE} inline; {$endif}
     /// contains the method ('GET','POST'.. e.g.) after GetRequest()
     property Method: RawUtf8
       read Http.CommandMethod;
@@ -874,6 +891,8 @@ type
     /// ensure the HTTP server thread is actually bound to the specified port
     // - for hsoEnableTls support, allow to specify all server-side TLS
     // events, including callbacks, as supported by OpenSSL
+    // - will raise EHttpServer if the server did not start properly, e.g.
+    // could not bind the port within the supplied time
     procedure WaitStarted(Seconds: integer = 30; TLS: PNetTlsContext = nil);
       overload;
     /// could be called after WaitStarted(seconds,'','','') to setup TLS
@@ -1670,7 +1689,7 @@ begin
   result := false;
   if Len < 0 then // Pos^ = '?par=val&par=val&...'
   begin
-    req.fUrlParamPos := Pos;
+    req.fUrlParamPos := Pos; // for faster req.UrlParam()
     exit;
   end;
   req.fRouteName := pointer(Names); // fast assign as pointer reference
@@ -1996,10 +2015,13 @@ begin
     fSafe.ReadUnLock;
   end;
   if found <> nil then
+    // there is something to react on
     if Assigned(found.Data.Execute) then
+      // request is implemented via a method
       result := found.Data.Execute(Ctxt)
     else if found.Data.ToUri <> '' then
     begin
+      // request is not implemented here, but the Url should be rewritten
       if m <> found.Data.ToUriMethod then
         Ctxt.Method := URIROUTERMETHOD[found.Data.ToUriMethod];
       if found.Data.ToUriErrorStatus <> 0 then
@@ -2009,6 +2031,33 @@ begin
       else
         found.RewriteUri(Ctxt);         // compute new URI with injected values
     end;
+end;
+
+function TUriRouter.Lookup(const aUri, aUriMethod: RawUtf8): TUriTreeNode;
+var
+  m: TUriRouterMethod;
+  t: TUriTree;
+begin
+  result := nil;
+  if (self = nil) or
+     (aUri = '') or
+     not UriMethod(aUriMethod, m) then
+    exit;
+  t := fTree[m];
+  if t = nil then
+    exit; // this method has no registration yet
+  fSafe.ReadLock;
+  {$ifdef HASFASTTRYFINALLY}
+  try
+  {$else}
+  begin
+  {$endif HASFASTTRYFINALLY}
+    result := pointer(TUriTreeNode(t.fRoot).Lookup(pointer(aUri), nil));
+  {$ifdef HASFASTTRYFINALLY}
+  finally
+  {$endif HASFASTTRYFINALLY}
+    fSafe.ReadUnLock;
+  end;
 end;
 
 
@@ -2168,6 +2217,18 @@ procedure THttpServerRequest.SetErrorMessage(const Fmt: RawUtf8;
   const Args: array of const);
 begin
   FormatString(Fmt, Args, fErrorMessage);
+end;
+
+procedure THttpServerRequest.SetOutJson(Value: pointer; TypeInfo: PRttiInfo);
+begin
+  SaveJson(Value^, TypeInfo, [], RawUtf8(fOutContent), []);
+  fOutContentType := JSON_CONTENT_TYPE_VAR;
+end;
+
+procedure THttpServerRequest.SetOutJson(Value: TObject);
+begin
+  ObjectToJson(Value, RawUtf8(fOutContent), []);
+  fOutContentType := JSON_CONTENT_TYPE_VAR;
 end;
 
 {$ifdef USEWININET}
@@ -3227,7 +3288,12 @@ begin
                         IdemPChar(P, 'HTTP/1.1');
     Http.Content := '';
     // get and parse HTTP request header
-    GetHeader(noheaderfilter);
+    if not GetHeader(noheaderfilter) then
+    begin
+      SockSendFlush('HTTP/1.0 400 Bad Request'#13#10#13#10'Rejected Headers');
+      result := grRejected;
+      exit;
+    end;
     fServer.ParseRemoteIPConnID(Http.Headers, fRemoteIP, fRemoteConnectionID);
     if hfConnectionClose in Http.HeaderFlags then
       fKeepAliveClient := false;
@@ -3305,6 +3371,11 @@ begin
     on E: Exception do
       result := grException;
   end;
+end;
+
+function THttpServerSocket.GetConnectionOpaque: PHttpServerConnectionOpaque;
+begin
+  result := @fConnectionOpaque;
 end;
 
 
@@ -3816,23 +3887,6 @@ begin
   result := 0;
 end;
 
-// returned P^ points to the first non digit char - not as GetNextItemQWord()
-function GetNextNumber(var P: PUtf8Char): Qword;
-var
-  c: PtrUInt;
-begin
-  result := 0;
-  if P <> nil then
-    repeat
-      c := byte(P^) - 48;
-      if c > 9 then
-        break
-      else
-        result := result * 10 + Qword(c);
-      inc(P);
-    until false;
-end;
-
 type
   TVerbText = array[hvOPTIONS..pred(hvMaximum)] of RawUtf8;
 
@@ -3986,7 +4040,7 @@ var
           begin
             FastSetString(range, pRawValue + 6, RawValueLength - 6); // need #0 end
             R := pointer(range);
-            rangestart := GetNextNumber(R);
+            rangestart := GetNextRange(R);
             if R^ = '-' then
             begin
               outcontlen.QuadPart := FileSize(filehandle);
@@ -3997,11 +4051,13 @@ var
               datachunkfile.ByteRange.StartingOffset.QuadPart := rangestart;
               if R^ in ['0'..'9'] then
               begin
-                rangelen := GetNextNumber(R) - rangestart + 1;
+                rangelen := GetNextRange(R) - rangestart + 1;
+                if Int64(rangelen) < 0 then
+                  rangelen := 0;
                 if rangelen < datachunkfile.ByteRange.Length.QuadPart then
                   // "bytes=0-499" -> start=0, len=500
                   datachunkfile.ByteRange.Length.QuadPart := rangelen;
-              end; // "bytes=1000-" -> start=1000, to eof)
+              end; // "bytes=1000-" -> start=1000, to eof
               FormatShort('Content-range: bytes %-%/%'#0, [rangestart,
                 rangestart + datachunkfile.ByteRange.Length.QuadPart - 1,
                 outcontlen.QuadPart], contrange);
@@ -4009,11 +4065,11 @@ var
               resp^.SetStatus(HTTP_PARTIALCONTENT, outstat);
             end;
           end;
-          with resp^.headers.KnownHeaders[respAcceptRanges] do
-          begin
-            pRawValue := 'bytes';
-            RawValueLength := 5;
-          end;
+        end;
+        with resp^.headers.KnownHeaders[respAcceptRanges] do
+        begin
+          pRawValue := 'bytes';
+          RawValueLength := 5;
         end;
         resp^.EntityChunkCount := 1;
         resp^.pEntityChunks := @datachunkfile;
@@ -4082,7 +4138,7 @@ begin
       // retrieve next pending request, and read its headers
       FillcharFast(req^, SizeOf(HTTP_REQUEST), 0);
       err := Http.ReceiveHttpRequest(fReqQueue, reqid, 0,
-        req^, length(reqbuf), bytesread);
+        req^, length(reqbuf), bytesread); // blocking until received something
       if Terminated then
         break;
       case err of
@@ -4115,6 +4171,7 @@ begin
               {out} ctxt.fRemoteIP, PQword(@ctxt.fConnectionID)^);
             // retrieve any SetAuthenticationSchemes() information
             if byte(fAuthenticationSchemes) <> 0 then // set only with HTTP API 2.0
+              // https://docs.microsoft.com/en-us/windows/win32/http/authentication-in-http-version-2-0
               for i := 0 to req^.RequestInfoCount - 1 do
                 if req^.pRequestInfo^[i].InfoType = HttpRequestInfoTypeAuth then
                   with PHTTP_REQUEST_AUTH_INFO(req^.pRequestInfo^[i].pInfo)^ do
@@ -4125,9 +4182,8 @@ begin
                           byte(ctxt.fAuthenticationStatus) := ord(AuthType) + 1;
                           if AccessToken <> 0 then
                           begin
-                            // Per spec https://docs.microsoft.com/en-us/windows/win32/http/authentication-in-http-version-2-0
                             GetDomainUserNameFromToken(AccessToken, ctxt.fAuthenticatedUser);
-                            // AccessToken lifecycle is application responsability and should be closed after use
+                            // AccessToken lifecycle is application responsability
                             CloseHandle(AccessToken);
                           end;
                         end;

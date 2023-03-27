@@ -143,13 +143,16 @@ type
   private
     // opaque wrapper with len: sockaddr_un=110 (POSIX) or sockaddr_in6=28 (Win)
     Addr: array[0..SOCKADDR_SIZE - 1] of byte;
-    function IsEqualAfter64(const another: TNetAddr): boolean;
   public
     /// initialize this address from standard IPv4/IPv6 or nlUnix textual value
     // - wrap the proper getaddrinfo/gethostbyname API
     function SetFrom(const address, addrport: RawUtf8; layer: TNetLayer): TNetResult;
     /// returns the network family of this address
     function Family: TNetFamily;
+    /// compare two IPv4/IPv6  network addresses
+    // - only compare the IP part of the address, not the port, nor any nlUnix
+    function IPEqual(const another: TNetAddr): boolean;
+      {$ifdef FPC}inline;{$endif}
     /// convert this address into its IPv4/IPv6 textual representation
     procedure IP(var res: RawUtf8; localasvoid: boolean = false); overload;
     /// convert this address into its IPv4/IPv6 textual representation
@@ -171,9 +174,6 @@ type
     function SetPort(p: TNetPort): TNetResult;
     /// compute the number of bytes actually used in this address buffer
     function Size: integer;
-      {$ifdef FPC}inline;{$endif}
-    /// compare two network addresses
-    function IsEqual(const another: TNetAddr): boolean;
       {$ifdef FPC}inline;{$endif}
     /// create a new TNetSocket instance on this network address
     // - returns nil on API error
@@ -215,6 +215,10 @@ type
     procedure SetLinger(linger: integer);
     /// allow to disable the Nagle's algorithm and send packets without delay
     procedure SetNoDelay(nodelay: boolean);
+    /// set the TCP_CORK (Linux) or TCP_NOPUSH (BSD) option
+    procedure SetCork(cork: boolean);
+    /// set the SO_BROADCAST option for UDP
+    procedure SetBroadcast(broadcast: boolean);
     /// set the SO_REUSEPORT option, to allow several servers to bind on a port
     // - do nothing on Windows
     procedure ReusePort;
@@ -336,15 +340,31 @@ function ToText(res: TNetResult): PShortString; overload;
 { ******************** Mac and IP Addresses Support }
 
 type
+  /// the filter used by IsPublicIP()
+  // - tiaAny always return true, for any IPv4 or IPv6 address
+  // - tiaIPv4 identify any IPv4 address
+  // - tiaIPv6 identify any IPv6 address
+  // - tiaIPv4Public identify any IPv4 address excluding  ranges, i.e. IANA private IPv4 address space
+  // - tiaIPv4Private identify IPv4 address only within this IANA address space
+  // - tiaIPv4DhcpPublic identify any IPv4 address exclusing IANA private IPv4
+  // address space and APIPA Windows Range
   TIPAddress = (
     tiaAny,
     tiaIPv4,
+    tiaIPv6,
     tiaIPv4Public,
     tiaIPv4Private,
-    tiaIPv6);
+    tiaIPv4DhcpPublic);
 
 /// detect IANA private IPv4 address space from its 32-bit raw value
+// - i.e. 10.x.x.x, 172.16-31.x.x and 192.168.x.x addresses
 function IsPublicIP(ip4: cardinal): boolean;
+
+/// detect APIPA private IPv4 address space from its 32-bit raw value
+// - Automatic Private IP Addressing (APIPA) is used by Windows clients to
+// setup some IP in case of local DHCP failure
+// - it covers the 169.254.0.1 - 169.254.254.255 range
+function IsApipaIP(ip4: cardinal): boolean;
 
 /// convert an IPv4 raw value into a ShortString text
 // - won't use the Operating System network layer API so works on XP too
@@ -385,14 +405,16 @@ function MacToHex(mac: PByteArray; maclen: PtrInt = 6): RawUtf8;
 
 /// enumerate all IP addresses of the current computer
 // - may be used to enumerate all adapters
+// - no cache is used for this function - consider GetIPAddressesText instead
 function GetIPAddresses(Kind: TIPAddress = tiaIPv4): TRawUtf8DynArray;
 
 /// returns all IP addresses of the current computer as a single CSV text
 // - may be used to enumerate all adapters
+// - an internal cache of the result with Sep=' ' is refreshed every 32 seconds
 function GetIPAddressesText(const Sep: RawUtf8 = ' ';
   Kind: TIPAddress = tiaIPv4): RawUtf8;
 
-/// flush the GetIPAddresses/GetMacAddresses internal cache
+/// flush the GetIPAddressesText/GetMacAddresses internal cache
 // - may be set to force detection after HW configuration change
 procedure MacIPAddressFlush;
 
@@ -408,12 +430,13 @@ type
   TMacAddressDynArray = array of TMacAddress;
 
 /// enumerate all Mac addresses of the current computer
+// - an internal cache is used, with refresh on explicit MacIPAddressFlush call
 function GetMacAddresses(UpAndDown: boolean = false): TMacAddressDynArray;
 
-/// enumerate all Mac addresses of the current computer as 'name1=addr1 name2=addr2'
+/// enumerate all MAC addresses of the current computer as 'name1=addr1 name2=addr2'
+// - an internal cache is used, with refresh on explicit MacIPAddressFlush call
 function GetMacAddressesText(WithoutName: boolean = true;
   UpAndDown: boolean = false): RawUtf8;
-
 
 {$ifdef OSWINDOWS}
 /// remotly get the MAC address of a computer, from its IP Address
@@ -421,6 +444,26 @@ function GetMacAddressesText(WithoutName: boolean = true;
 // - return the MAC address as a 12 hexa chars ('0050C204C80A' e.g.)
 function GetRemoteMacAddress(const IP: RawUtf8): RawUtf8;
 {$endif OSWINDOWS}
+
+/// retrieve all DNS (Domain Name Servers) addresses known by the Operating System
+// - on POSIX, return "nameserver" from /etc/resolv.conf unless usePosixEnv is set
+// - on Windows, calls GetNetworkParams API from iphlpapi
+// - an internal cache of the result will be refreshed every 8 seconds
+function GetDnsAddresses(usePosixEnv: boolean = false): TRawUtf8DynArray;
+
+var
+  /// if manually set, GetDomainNames() will return this value
+  // - e.g. 'ad.mycompany.com'
+  ForcedDomainName: RawUtf8;
+
+/// retrieve the AD Domain Name addresses known by the Operating System
+// - on POSIX, return all "search" from /etc/resolv.conf unless usePosixEnv is set
+// - on Windows, calls GetNetworkParams API from iphlpapi to retrieve a single item
+// - no cache is used for this function
+// - you can force for a given value using ForcedDomainName, e.g. if the
+// machine is not actually registered for / part of the domain, but has access
+// to the domain controller
+function GetDomainNames(usePosixEnv: boolean = false): TRawUtf8DynArray;
 
 
 { ******************** TLS / HTTPS Encryption Abstract Layer }
@@ -501,6 +544,16 @@ type
     /// input: if deprecated TLS 1.0 or TLS 1.1 are allowed
     // - default is TLS 1.2+ only, and deprecated SSL 2/3 are always disabled
     AllowDeprecatedTls: boolean;
+    /// input: enable two-way TLS for the server
+    // - to be used with OnEachPeerVerify callback
+    // - on OpenSSL client or server, set SSL_VERIFY_FAIL_IF_NO_PEER_CERT mode
+    // - not used on SChannel
+    ClientCertificateAuthentication: boolean;
+    /// input: if two-way TLS client should be verified only once on the server
+    // - to be used with OnEachPeerVerify callback
+    // - on OpenSSL client or server, set SSL_VERIFY_CLIENT_ONCE mode
+    // - not used on SChannel
+    ClientVerifyOnce: boolean;
     /// input: PEM/PFX file name containing a certificate to be loaded
     // - (Delphi) warning: encoded as UTF-8 not UnicodeString/TFileName
     // - on OpenSSL client or server, calls SSL_CTX_use_certificate_file() API
@@ -570,6 +623,7 @@ type
     OnPeerValidate: TOnNetTlsPeerValidate;
     /// called by INetTls.AfterConnection for each peer validation
     // - allow e.g. to verify CN or DNSName fields of each peer certificate
+    // - see also ClientCertificateAuthentication and ClientVerifyOnce options
     // - not used on SChannel
     OnEachPeerVerify: TOnNetTlsEachPeerVerify;
     /// called by INetTls.AfterConnection after standard peer validation
@@ -620,9 +674,6 @@ type
     function Send(Buffer: pointer; var Length: integer): TNetResult;
   end;
 
-  /// signature of a factory for a new TLS encrypted layer
-  TOnNewNetTls = function: INetTls;
-
   /// event called by HTTPS server to publish HTTP-01 challenges on port 80
   // - Let's Encrypt typical uri is '/.well-known/acme-challenge/<TOKEN>'
   // - the server should send back the returned content as response with
@@ -640,7 +691,7 @@ var
   /// global factory for a new TLS encrypted layer for TCrtSocket
   // - on Windows, this unit will set a factory using the system SChannel API
   // - on other targets, could be set by the mormot.lib.openssl11.pas unit
-  NewNetTls: TOnNewNetTls;
+  NewNetTls: function: INetTls;
 
   /// global callback set to TNetTlsContext.AfterAccept from InitNetTlsContext()
   // - defined e.g. by mormot.net.acme.pas unit to support Let's Encrypt
@@ -736,7 +787,7 @@ type
     fOwner: TPollSockets;
   public
     /// initialize the polling
-    constructor Create(aOwner: TPollSockets); virtual;
+    constructor Create(aOwner: TPollSockets = nil); reintroduce; virtual;
     /// stop status modifications tracking on one specified TSocket
     // - the socket should have been monitored by a previous call to Subscribe()
     // - on success, returns true and fill tag with the associated opaque value
@@ -752,8 +803,7 @@ type
     /// if this poll has no size limit, and subscription/wait is thread safe
     // with edge detection
     // - false for select/poll, but true for epoll
-    // - follow POLLSOCKETEPOLL conditional within this unit
-    class function FollowEpoll: boolean;
+    class function FollowEpoll: boolean; virtual;
   published
     /// how many TSocket instances could be tracked, at most, in a single instance
     // - depends on the API used
@@ -823,6 +873,8 @@ type
     // low "ulimit -H -n" value, you may add the following line in your
     // /etc/limits.conf or /etc/security/limits.conf file:
     // $ * hard nofile 65535
+    // - you can specify PollFewSocketClass as aPollClass if only a few
+    // sockets are likely to be tracked (to use lighter poll instead of epoll)
     constructor Create(aPollClass: TPollSocketClass = nil);
     /// finalize the sockets polling, and release all used memory
     destructor Destroy; override;
@@ -917,7 +969,8 @@ function ResToEvents(const res: TPollSocketResult): TPollSocketEvents;
   {$ifdef HASINLINE}inline;{$endif}
 
 /// fill a TPollSocketResult opaque 64-bit from its corresponding information
-procedure SetRes(var res: TPollSocketResult; tag: TPollSocketTag; ev: TPollSocketEvents);
+procedure SetRes(var res: TPollSocketResult;
+  tag: TPollSocketTag; ev: TPollSocketEvents);
   {$ifdef HASINLINE}inline;{$endif}
 
 /// set the TPollSocketEvents set as [] from TPollSocketResult opaque 64-bit
@@ -925,10 +978,18 @@ procedure ResetResEvents(var res: TPollSocketResult);
   {$ifdef HASINLINE}inline;{$endif}
 
 /// class function factory, returning a socket polling class matching
-// at best the current operating system
+// at best the current operating system for a high number of sockets
 // - return a hidden TPollSocketSelect class under Windows, TPollSocketEpoll
 // under Linux, or TPollSocketPoll on BSD
+// - not to be used directly, but within TPollSockets.Create
 function PollSocketClass: TPollSocketClass;
+
+/// return a class instance able to poll the state of a few sockets
+// - allow to track some sockets via Subscribe/WaitForModified/Unsubscribe
+// - return a TPollSocketSelect under Windows, or TPollSocketPoll on POSIX, so
+// up to 512 sockets on Windows (via select), 20000 on POSIX (via poll)
+function PollFewSockets: TPollSocketAbstract;
+
 
 function ToText(ev: TPollSocketEvents): TShort8; overload;
 
@@ -1001,6 +1062,10 @@ const
 
 /// IdemPChar() like function, to avoid linking mormot.core.text
 function NetStartWith(p, up: PUtf8Char): boolean;
+
+/// check is the supplied address text is on format '1.2.3.4'
+// - will optionally fill a 32-bit binary buffer with the decoded IPv4 address
+function NetIsIP4(text: PUtf8Char; value: PByte = nil): boolean;
 
 
 { ********* TCrtSocket Buffered Socket Read/Write Class }
@@ -1151,7 +1216,11 @@ type
     // - can be used also without SockIn: it will call directly SockRecv()
     // in such case (assuming UseOnlySockin=false)
     function SockInRead(Content: PAnsiChar; Length: integer;
-      UseOnlySockIn: boolean = false): integer;
+      UseOnlySockIn: boolean = false): integer; overload;
+    /// read Length bytes from SockIn buffer + Sock if necessary into a string
+    // - just allocate a result string and call SockInRead() to fill it
+    function SockInRead(Length: integer;
+      UseOnlySockIn: boolean = false): RawByteString; overload;
     /// returns the number of bytes in SockIn buffer or pending in Sock
     // - if SockIn is available, it first check from any data in SockIn^.Buffer,
     // then call InputSock to try to receive any pending data if the buffer is void
@@ -1244,7 +1313,7 @@ type
     function TrySndLow(P: pointer; Len: integer): boolean;
     /// returns the low-level error number
     // - i.e. returns WSAGetLastError
-    function LastLowSocketError: integer;
+    class function LastLowSocketError: integer;
     /// direct accept an new incoming connection on a bound socket
     // - instance should have been setup as a server via a previous Bind() call
     // - returns nil on error or a ResultClass instance on success
@@ -1595,24 +1664,20 @@ begin
   end;
 end;
 
-function TNetAddr.IsEqualAfter64(const another: TNetAddr): boolean;
+function TNetAddr.IPEqual(const another: TNetAddr): boolean;
 begin
   case PSockAddr(@Addr)^.sa_family of
     AF_INET:
-      result := true; // SizeOf(sockaddr_in) = SizeOf(Int64) = 8
+      result := cardinal(PSockAddr(@Addr)^.sin_addr) =
+                cardinal(PSockAddr(@another)^.sin_addr);
     AF_INET6:
-      result := CompareMemFixed(@Addr[8], @another.Addr[8], SizeOf(sockaddr_in6) - 8)
+      result := (PHash128Rec(@PSockAddrIn6(@Addr)^.sin6_addr).Lo =
+                 PHash128Rec(@PSockAddrIn6(@another)^.sin6_addr).Lo) and
+                (PHash128Rec(@PSockAddrIn6(@Addr)^.sin6_addr).Hi =
+                 PHash128Rec(@PSockAddrIn6(@another)^.sin6_addr).Hi);
   else
-    result := false;
+    result := false; // nlUnix has no IP
   end;
-end;
-
-function TNetAddr.IsEqual(const another: TNetAddr): boolean;
-begin
-  if PInt64(@Addr)^ = PInt64(@another)^ then
-    result := IsEqualAfter64(another)
-  else
-    result := false;
 end;
 
 function TNetAddr.NewSocket(layer: TNetLayer): TNetSocket;
@@ -1643,6 +1708,9 @@ begin
        (address = cLocalhost) or
        (address = cAnyHost) then // for client: '0.0.0.0'->'127.0.0.1'
       result := addr.SetFrom(cLocalhost, port, layer)
+    else if (layer = nlUnix) or
+            NetIsIP4(pointer(address)) then
+       result := addr.SetFrom(address, port, layer)
     else if NewSocketAddressCache.Search(address, addr) then
     begin
       fromcache := true;
@@ -1776,7 +1844,8 @@ begin
   end;
   // bind or connect to this Socket
   {$ifdef OSWINDOWS}
-  if not dobind then
+  if (layer <> nlUdp) and
+     not dobind then
   begin // on Windows, default buffers are of 8KB :(
     sock.SetRecvBufferSize(65536);
     sock.SetSendBufferSize(65536);
@@ -1921,6 +1990,14 @@ begin
   // - on Windows, default is 8192
 end;
 
+procedure TNetSocketWrap.SetBroadcast(broadcast: boolean);
+var
+  v: integer;
+begin
+  v := ord(broadcast);
+  SetOpt(SOL_SOCKET, SO_BROADCAST, @v, SizeOf(v));
+end;
+
 procedure TNetSocketWrap.SetupConnection(layer: TNetLayer;
   sendtimeout, recvtimeout: integer);
 begin
@@ -2044,13 +2121,15 @@ function TNetSocketWrap.SendTo(Buf: pointer; len: integer;
 begin
   if @self = nil then
     result := nrNoSocket
-  else if mormot.net.sock.sendto(TSocket(@self), Buf, len, 0, @addr, SizeOf(addr)) < 0 then
+  else if mormot.net.sock.sendto(
+            TSocket(@self), Buf, len, 0, @addr, addr.Size) < 0 then
     result := NetLastError
   else
     result := nrOk;
 end;
 
-function TNetSocketWrap.RecvFrom(Buf: pointer; len: integer; out addr: TNetAddr): integer;
+function TNetSocketWrap.RecvFrom(Buf: pointer; len: integer;
+  out addr: TNetAddr): integer;
 var
   addrlen: integer;
 begin
@@ -2186,13 +2265,19 @@ begin
     10:
       exit;
     172:
-      if ((ip4 shr 8) and 255) in [16..31] then
+      if ToByte(ip4 shr 8) in [16..31] then
         exit;
     192:
-      if (ip4 shr 8) and 255 = 168 then
+      if ToByte(ip4 shr 8) = 168 then
         exit;
   end;
   result := true;
+end;
+
+function IsApipaIP(ip4: cardinal): boolean;
+begin
+  result := (ip4 and $ffff = ord(169) + ord(254) shl 8) and
+            (ToByte(ip4 shr 16) < 255);
 end;
 
 procedure IP4Short(ip4addr: PByteArray; var s: ShortString);
@@ -2510,14 +2595,18 @@ var
   i: PtrInt;
   addr: TMacAddressDynArray;
   w, wo: RawUtf8;
+  ok: boolean;
 begin
   with MacAddresses[UpAndDown] do
   begin
+    Safe.Lock; // to avoid memory leak
     result := Text[WithoutName];
-    if (result <> '') or
-       Searched then
+    ok := (result <> '') or
+          Searched;
+    Safe.UnLock; // TLightLock is not rentrant
+    if ok then
       exit;
-    addr := GetMacAddresses(UpAndDown);
+    addr := GetMacAddresses(UpAndDown); // will call Safe.Lock/UnLock
     if addr = nil then
       exit;
     for i := 0 to high(addr) do
@@ -2528,11 +2617,11 @@ begin
       end;
     SetLength(w, length(w) - 1);
     SetLength(wo, length(wo) - 1);
-    Safe.Lock; // to avoid memory leak
+    Safe.Lock;
     Text[false] := w;
     Text[true] := wo;
-    Safe.UnLock;
     result := Text[WithoutName];
+    Safe.UnLock;
   end;
 end;
 
@@ -2551,6 +2640,45 @@ begin
       inc(n);
     end;
   SetLength(result, n);
+end;
+
+var
+  DnsCache: record
+    Safe: TLightLock;
+    Tix: cardinal;
+    Value: TRawUtf8DynArray;
+  end;
+
+function GetDnsAddresses(usePosixEnv: boolean): TRawUtf8DynArray;
+var
+  tix32: cardinal;
+begin
+  tix32 := mormot.core.os.GetTickCount64 shr 13 + 1; // refresh every 8192 ms
+  with DnsCache do
+  begin
+    Safe.Lock;
+    try
+      if tix32 <> Tix then
+      begin
+        Value := _GetDnsAddresses(usePosixEnv, false);
+        Tix := tix32;
+      end;
+      result := Value;
+    finally
+      Safe.UnLock;
+    end;
+  end;
+end;
+
+function GetDomainNames(usePosixEnv: boolean): TRawUtf8DynArray;
+begin
+  if ForcedDomainName <> '' then
+  begin
+    SetLength(result, 1);
+    result[0] := ForcedDomainName;
+  end
+  else
+    result := _GetDnsAddresses(usePosixEnv, {getAD=}true); // no cache for the AD
 end;
 
 
@@ -2658,11 +2786,7 @@ end;
 
 class function TPollSocketAbstract.FollowEpoll: boolean;
 begin
-  {$ifdef POLLSOCKETEPOLL}
-  result := true; // TPollSocketEpoll is thread-safe and has no size limit
-  {$else}
   result := false; // select/poll API are not thread safe
-  {$endif POLLSOCKETEPOLL}
 end;
 
 constructor TPollSocketAbstract.Create(aOwner: TPollSockets);
@@ -3331,6 +3455,56 @@ begin
       exit;
   until false;
   result := true;
+end;
+
+function NetIsIP4(text: PUtf8Char; value: PByte): boolean;
+var
+  n, o, b: integer;
+begin
+  result := false;
+  if text = nil then
+    exit;
+  b := -1;
+  n := 0;
+  while true do
+    case text^ of
+      #0:
+        if (b > 255) or
+           (b < 0) or
+           (n <> 3) then
+          exit
+        else
+          break;
+      '.':
+        begin
+          if (b > 255) or
+             (b < 0) or
+             (n = 3) then
+            exit;
+          if value <> nil then
+          begin
+            value^ := b;
+            inc(value);
+          end;
+          b := -1;
+          inc(n);
+          inc(text);
+        end;
+      '0' .. '9':
+        begin
+          o := ord(text^) - 48;
+          if b < 0 then
+            b := o
+          else
+            b := b * 10 + o;
+          inc(text);
+        end
+    else
+      exit;
+    end;
+  if value <> nil then
+    value^ := b;
+  result := true; // 1.2.3.4
 end;
 
 procedure DoEncode(rp, sp: PAnsiChar; len: cardinal);
@@ -4099,6 +4273,17 @@ begin
   end;
 end;
 
+function TCrtSocket.SockInRead(Length: integer; UseOnlySockIn: boolean): RawByteString;
+begin
+  result := '';
+  if (self = nil) or
+     (Length <= 0) then
+    exit;
+  FastSetRawByteString(result, nil, Length);
+  if SockInRead(pointer(result), Length, UseOnlySockIn) <> Length then
+    result := '';
+end;
+
 function TCrtSocket.SockIsDefined: boolean;
 begin
   result := (self <> nil) and
@@ -4323,11 +4508,13 @@ end;
 function TCrtSocket.SockReceiveString: RawByteString;
 var
   available, resultlen, read: integer;
+  endtix: Int64;
 begin
   result := '';
   if not SockIsDefined then
     exit;
   resultlen := 0;
+  endtix := mormot.core.os.GetTickCount64 + TimeOut;
   repeat
     if fSock.RecvPending(available) <> nrOK then
       exit; // raw socket error
@@ -4336,6 +4523,8 @@ begin
       begin
         // wait till something
         SleepHiRes(1); // some delay in infinite loop
+        if mormot.core.os.GetTickCount64 > endtix then
+          exit;
         continue;
       end
       else
@@ -4544,7 +4733,7 @@ begin
   result := true;
 end;
 
-function TCrtSocket.LastLowSocketError: integer;
+class function TCrtSocket.LastLowSocketError: integer;
 begin
   result := sockerrno;
 end;
@@ -4609,7 +4798,7 @@ initialization
   InitializeUnit; // in mormot.net.sock.windows/posix.inc
 
 finalization
-  FinalizeUnit;
+  FinalizeUnit;  // in mormot.net.sock.windows/posix.inc
 
 end.
 

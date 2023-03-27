@@ -838,7 +838,7 @@ end;
 class function TSynTestCase.RandomUri(CharCount: integer): RawByteString;
 const
   URL_CHARS: array[0..63] of AnsiChar =
-    'abcdefghijklmnopqrstuvwxyz0123456789-abCdEfGH.JKlmnOP.RsTuVWxyz.';
+    'abcdefghijklmnopqrstuvwxyz0123456789-ABCDEFGH.JKLMNOP-RSTUVWXYZ.';
 begin
   InitRandom64(@URL_CHARS, CharCount, result);
 end;
@@ -1441,7 +1441,7 @@ begin
       result := GetLastError
     else
       result := 0;
-    AppendBufferToRawUtf8(PPRawUtf8(@t.UserData)^^, t.BufPtr, t.Bufpos);
+    Append(PPRawUtf8(@t.UserData)^^, t.BufPtr, t.Bufpos);
     t.BufPos := 0;
   end;
 end;

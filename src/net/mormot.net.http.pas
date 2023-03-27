@@ -27,10 +27,10 @@ uses
   mormot.core.os,
   mormot.core.unicode, // for efficient UTF-8 text process within HTTP
   mormot.core.text,
-  mormot.core.data,
-  mormot.core.buffers,
-  mormot.core.zip,
   mormot.core.rtti,
+  mormot.core.buffers,
+  mormot.core.data,
+  mormot.core.zip,
   mormot.net.sock;
 
 
@@ -158,6 +158,10 @@ function UrlDecodeParam(P: PUtf8Char; const UpperName: RawUtf8;
 function UrlDecodeParam(P: PUtf8Char; const UpperName: RawUtf8;
   out Value: Int64): boolean; overload;
 
+/// extract a 64-bit value from a 'Range: xxx-xxx ' input
+// - returned P^ points to the first non digit char - not as GetNextItemQWord()
+function GetNextRange(var P: PUtf8Char): Qword;
+
 const
   /// pseudo-header containing the current Synopse mORMot framework version
   XPOWEREDNAME = 'X-Powered-By';
@@ -190,6 +194,7 @@ type
     hrsErrorRejected,
     hrsErrorMisuse,
     hrsErrorUnsupportedFormat,
+    hrsErrorUnsupportedRange,
     hrsErrorAborted,
     hrsErrorShutdownInProgress);
 
@@ -208,8 +213,15 @@ type
     hfConnectionUpgrade,
     hfConnectionKeepAlive,
     hfExpect100,
-    hfHasRemoteIP,
-    hfContentStreamNeedFree);
+    hfHasRemoteIP);
+
+  /// map the output state for THttpRequestContext.ResponseFlags
+  // - separated from THttpRequestHeaderFlags so that they would both be stored
+  // and accessed as one byte - which is faster than word on Intel CPUs
+  THttpRequestReponseFlags = set of (
+    rfAcceptRange,
+    rfRange,
+    rfContentStreamNeedFree);
 
   PHttpRequestContext = ^THttpRequestContext;
 
@@ -256,6 +268,8 @@ type
     State: THttpRequestState;
     /// map the presence of some HTTP headers, but retrieved during ParseHeader
     HeaderFlags: THttpRequestHeaderFlags;
+    /// define some flags when sending the response
+    ResponseFlags: THttpRequestReponseFlags;
     /// customize the HTTP process
     Options: THttpRequestOptions;
     /// could be set so that ParseHeader/GetTrimmed will intern RawUtf8 values
@@ -285,13 +299,22 @@ type
     // but retrieved during ParseHeader
     // - is the raw Token, excluding 'Authorization: Bearer ' trailing chars
     BearerToken: RawUtf8;
+    /// decoded 'Range: bytes=..' start value - default is 0
+    // - e.g. 1024 for 'Range: bytes=1024-1025'
+    // - equals -1 in case on unsupported multipart range requests
+    RangeOffset: Int64;
+    /// decoded 'Range: bytes=...' end value - default is -1 (until end of file)
+    // - e.g. 2 for 'Range: bytes=1024-1025'
+    // - e.g. -1 for 'Range: bytes=1024-'
+    // - contains size for CompressContentAndFinalizeHead Content-Range: header
+    RangeLength: Int64;
     /// will contain the data retrieved from the server, after all ParseHeader
     Content: RawByteString;
     /// same as HeaderGetValue('CONTENT-LENGTH'), but retrieved during ParseHeader
     // - is overridden with real Content length during HTTP body retrieval
     ContentLength: Int64;
     /// stream-oriented alternative to the Content in-memory buffer
-    // - is typically a TFileStream
+    // - is typically a TFileStreamEx
     ContentStream: TStream;
     /// same as HeaderGetValue('SERVER-INTERNALSTATE'), but retrieved by ParseHeader
     // - proprietary header, used with our RESTful ORM access
@@ -405,7 +428,7 @@ type
     // and HeaderFlags fields since HeaderGetValue() would return ''
     // - force HeadersUnFiltered=true to store all headers including the
     // connection-related fields, but increase memory and reduce performance
-    procedure GetHeader(HeadersUnFiltered: boolean = false);
+    function GetHeader(HeadersUnFiltered: boolean = false): boolean;
     /// retrieve the HTTP body (after uncompression if necessary)
     // - into Content or DestStream
     procedure GetBody(DestStream: TStream = nil);
@@ -440,7 +463,7 @@ type
 
 
 
-{ ******************** Abstract Server-Side Types used e.g. for Client-Server Protocol }
+{ ******************** Abstract Server-Side Types e.g. for Client-Server Protocol }
 
 type
   {$M+} // to have existing RTTI for published properties
@@ -1158,6 +1181,21 @@ begin
   result := false;
 end;
 
+function GetNextRange(var P: PUtf8Char): Qword;
+var
+  c: PtrUInt;
+begin
+  result := 0;
+  if P <> nil then
+    repeat
+      c := byte(P^) - 48;
+      if c > 9 then
+        break
+      else
+        result := result * 10 + Qword(c);
+      inc(P);
+    until false;
+end;
 
 
 { ******************** Reusable HTTP State Machine }
@@ -1170,12 +1208,15 @@ begin
   Process.Reset;
   State := hrsNoStateMachine;
   HeaderFlags := [];
+  ResponseFlags := [];
   Options := [];
   Headers := '';
   ContentType := '';
   Upgrade := '';
   BearerToken := '';
   UserAgent := '';
+  RangeOffset := 0;
+  RangeLength := -1;
   Content := '';
   ContentLength := -1;
   ServerInternalState := 0;
@@ -1208,7 +1249,7 @@ procedure THttpRequestContext.ParseHeader(P: PUtf8Char;
   HeadersUnFiltered: boolean);
 var
   i, len: PtrInt;
-  P2: PUtf8Char;
+  P1, P2: PUtf8Char;
 begin
   if P = nil then
     exit; // avoid unexpected GPF in case of wrong usage
@@ -1264,13 +1305,13 @@ begin
             begin
               // 'CONTENT-ENCODING:'
               P := GotoNextNotSpace(P + 17);
-              P2 := P;
+              P1 := P;
               while P^ > ' ' do
                 inc(P); // no control char should appear in any header
-              len := P - P2;
+              len := P - P1;
               if len <> 0 then
                 for i := 0 to length(Compress) - 1 do
-                  if IdemPropNameU(Compress[i].Name, P2, len) then
+                  if IdemPropNameU(Compress[i].Name, P1, len) then
                   begin
                     CompressContentEncoding := i; // will handle e.g. gzip
                     if not HeadersUnFiltered then
@@ -1332,7 +1373,7 @@ begin
               begin
                 repeat
                   inc(P);
-                until P^ <= ' ';
+                until P^ <> ' ';
                 if PCardinal(P)^ or $20202020 =
                   ord('u') + ord('p') shl 8 + ord('g') shl 16 + ord('r') shl 24 then
                   // 'CONNECTION: KEEP-ALIVE, UPGRADE'
@@ -1408,6 +1449,39 @@ begin
         // 'AUTHORIZATION: BEARER '
         GetTrimmed(P + 22, BearerToken, {nointern=}true);
         // always allow FindNameValue(..., HEADER_BEARER_UPPER, ...) search
+    ord('r') + ord('a') shl 8 + ord('n') shl 16 + ord('g') shl 24:
+      if (PCardinal(P + 4)^ or $20202020 =
+        ord('e') + ord(':') shl 8 + ord(' ') shl 16 + ord('b') shl 24) and
+         (PCardinal(P + 8)^ or $20202020 =
+        ord('y') + ord('t') shl 8 + ord('e') shl 16 + ord('s') shl 24) and
+         (P[12] = '=') then
+        if (RangeLength >= 0) or
+           (RangeOffset <> 0) then
+          State := hrsErrorUnsupportedRange // no multipart range
+        else
+        begin
+          // 'RANGE: '
+          P1 := GotoNextNotSpace(P + 13); // use pointer on stack
+          RangeOffset := GetNextRange(P1);
+          if P1^ = '-' then
+          begin
+            inc(P1);
+            if P1^ in ['0'..'9'] then
+            begin
+              // "bytes=0-499" -> start=0, len=500
+              RangeLength := Int64(GetNextRange(P1)) - RangeOffset + 1;
+              if RangeLength < 0 then
+                RangeLength := 0;
+            end;
+            // "bytes=1000-" -> start=1000, keep RangeLength=-1 to eof
+            if P1^ = ',' then
+              State := hrsErrorUnsupportedRange; // no multipart range
+          end
+          else
+            State := hrsErrorUnsupportedRange;
+          if not HeadersUnFiltered then
+            exit;
+        end;
     ord('u') + ord('p') shl 8 + ord('g') shl 16 + ord('r') shl 24:
       if PCardinal(P + 4)^ or $20202020 =
         ord('a') + ord('d') shl 8 + ord('e') shl 16 + ord(':') shl 24 then
@@ -1601,10 +1675,10 @@ begin
       hrsGetHeaders:
         if ProcessParseLine(st) then
           if st.LineLen <> 0 then
-            // Headers end with a void line
+            // Headers continue as long as text lines appear
             ParseHeader(st.Line, hroHeadersUnfiltered in Options)
           else
-            // we reached end of headers
+            // void line: we reached end of headers
             if hfTransferChunked in HeaderFlags then
               // process chunked body
               State := hrsGetBodyChunkedHexFirst
@@ -1726,6 +1800,8 @@ begin
     CompressContent(CompressAcceptHeader, Compress, ContentType,
       Content, ContentEncoding);
   result := @Head;
+  if rfAcceptRange in ResponseFlags then
+    result^.AppendShort('Accept-Ranges: bytes'#13#10);
   if ContentEncoding <> '' then
   begin
     result^.AppendShort('Content-Encoding: ');
@@ -1736,10 +1812,19 @@ begin
   begin
     ContentPos := pointer(Content);
     ContentLength := length(Content);
-  end
-  else if ContentLength = 0 then
-    // maybe set by SetupResponse for local file (also for HEAD responses)
-    ContentLength := ContentStream.Size - ContentStream.Position;
+    // ContentLength has been set by ContentFromFile (also for HEAD responses)
+  end;
+  if rfRange in ResponseFlags then
+  begin
+    // Content-Range: bytes 0-1023/146515
+    result^.AppendShort('Content-Range: bytes ');
+    result^.Append(RangeOffset);
+    result^.Append('-');
+    result^.Append(RangeOffset + ContentLength - 1);
+    result^.Append('/');
+    result^.Append(RangeLength); // = FileSize after ContentFromFile()
+    result^.AppendCRLF;
+  end;
   result^.AppendShort('Content-Length: ');
   result^.Append(ContentLength);
   result^.AppendCRLF;
@@ -1828,7 +1913,7 @@ end;
 
 procedure THttpRequestContext.ProcessDone;
 begin
-  if hfContentStreamNeedFree in HeaderFlags then
+  if rfContentStreamNeedFree in ResponseFlags then
     FreeAndNilSafe(ContentStream);
 end;
 
@@ -1836,10 +1921,16 @@ function THttpRequestContext.ContentFromFile(
   const FileName: TFileName; CompressGz: integer): boolean;
 var
   gz: TFileName;
+  tosend: Int64;
+  hasRange: boolean;
 begin
   Content := '';
+  hasRange := (RangeLength >= 0) or
+              (RangeOffset > 0);
   if (CompressGz >= 0) and
-     (CompressGz in CompressAcceptHeader) then
+     (CompressGz in CompressAcceptHeader) and
+     (CommandMethod <> 'HEAD') and
+     not hasRange then
   begin
     // try locally cached gzipped static content
     gz := FileName + '.gz';
@@ -1849,17 +1940,33 @@ begin
       // there is an already-compressed .gz file to send away
       ContentStream := TFileStreamEx.Create(gz, fmOpenReadDenyNone);
       ContentEncoding := 'gzip';
-      include(HeaderFlags, hfContentStreamNeedFree);
+      include(ResponseFlags, rfContentStreamNeedFree);
       result := true;
       exit; // only use ContentStream to bypass recompression
     end;
   end;
   ContentLength := FileSize(FileName);
   result := ContentLength <> 0;
+  if result and hasRange then
+    if RangeOffset >= ContentLength then
+      result := false // invalid offset
+    else
+    begin
+      tosend := RangeLength;
+      if (tosend < 0) or // -1 for end of file 'Range: 1024-'
+         (RangeOffset + tosend > ContentLength) then
+        tosend := ContentLength - RangeOffset; // truncate
+      RangeLength := ContentLength; // contains size for Content-Range: header
+      ContentLength := tosend;
+      include(ResponseFlags, rfRange);
+    end;
   if not result then
-    // there is no such file available
+    // there is no such file available, or range clearly wrong
     exit;
+  include(ResponseFlags, rfAcceptRange);
   ContentStream := TFileStreamEx.Create(FileName, fmOpenReadDenyNone);
+  if RangeOffset <> 0 then
+    ContentStream.Seek(RangeOffset, soBeginning);
   if (ContentLength < 1 shl 20) and
      (CommandMethod <> 'HEAD') then
   begin
@@ -1869,8 +1976,10 @@ begin
     FreeAndNilSafe(ContentStream);
   end
   else
-    // stream existing big file by chunks (also used for HEAD responses)
-    include(HeaderFlags, hfContentStreamNeedFree);
+  begin
+    // stream existing big file by chunks (also used for HEAD or Range)
+    include(ResponseFlags, rfContentStreamNeedFree);
+  end;
 end;
 
 
@@ -1936,13 +2045,14 @@ begin
   until b = 0;
 end;
 
-procedure THttpSocket.GetHeader(HeadersUnFiltered: boolean);
+function THttpSocket.GetHeader(HeadersUnFiltered: boolean): boolean;
 var
   s: RawUtf8;
   err: integer;
   line: array[0..4095] of AnsiChar; // avoid most memory allocations
 begin
   // parse the headers
+  result := false;
   HttpStateReset;
   if SockIn <> nil then
     repeat
@@ -1955,6 +2065,8 @@ begin
       if line[0] = #0 then
         break; // HTTP headers end with a void line
       Http.ParseHeader(@line, HeadersUnFiltered);
+      if Http.State <> hrsNoStateMachine then
+        exit; // error
     until false
   else
     repeat
@@ -1962,8 +2074,11 @@ begin
       if s = '' then
         break;
       Http.ParseHeader(pointer(s), HeadersUnFiltered);
+      if Http.State <> hrsNoStateMachine then
+        exit; // error
     until false;
   // finalize the headers
+  result := true;
   Http.ParseHeaderFinalize; // compute all meaningful headers
   if Assigned(OnLog) then
     OnLog(sllTrace, 'GetHeader % % flags=% len=% %', [Http.CommandMethod,
@@ -2135,7 +2250,7 @@ begin
 end;
 
 
-{ ******************** Abstract Server-Side Types used e.g. for Client-Server Protocol }
+{ ******************** Abstract Server-Side Types e.g. for Client-Server Protocol }
 
 { THttpServerRequestAbstract }
 
@@ -2392,7 +2507,9 @@ procedure THttpAcceptBan.BanIP(const ip4: RawUtf8);
 var
   c: cardinal;
 begin
-  if IPToCardinal(pointer(ip4), c) then
+  if NetIsIP4(pointer(ip4), @c) and
+     ({%H-}c <> 0) and
+     (c <> $0100007f) then
     BanIP(c);
 end;
 

@@ -525,6 +525,11 @@ begin
   SetOpt(SOL_SOCKET, SO_LINGER, @v, SizeOf(v));
 end;
 
+procedure TNetSocketWrap.SetCork(cork: boolean);
+begin
+  // do nothing on Windows
+end;
+
 procedure SetTimeVal(ms: cardinal; out tv: TTimeVal);
 begin
   if ms = 0 then
@@ -609,7 +614,7 @@ type
   PMIB_IPADDRTABLE = ^MIB_IPADDRTABLE;
   MIB_IPADDRTABLE = record
     dwNumEntries: DWORD;
-    ip: array[0..200] of record
+    ip: array[byte] of record
       dwAddr: DWORD;
       dwIndex: DWORD;
       dwMask: DWORD;
@@ -621,6 +626,7 @@ type
   end;
 
 var
+  iphlpapiDll: THandle;
   // some iphlpapi.dll late-binded API via DelayedProc()
   GetIpAddrTable: function (pIpAddrTable: PMIB_IPADDRTABLE;
     var pdwSize: DWORD; bOrder: BOOL): DWORD; stdcall;
@@ -636,34 +642,39 @@ begin
   if Kind = tiaIPv6 then
     exit; // GetIpAddrTable() is an IPv4 only API
   Size := SizeOf(Table);
-  if not DelayedProc(GetIpAddrTable, 'iphlpapi.dll', 'GetIpAddrTable') or
+  if not DelayedProc(GetIpAddrTable, iphlpapiDll, 'iphlpapi.dll',
+           'GetIpAddrTable') or
      (GetIpAddrTable(@Table, Size, false) <> NO_ERROR) then
     exit;
   SetLength(result, Table.dwNumEntries);
   n := 0;
   for i := 0 to Table.dwNumEntries-1 do
     with Table.ip[i] do
-    if (dwAddr <> $0100007f) and
-       (dwAddr <> 0) then
-    begin
-      case Kind of
-        tiaIPv4Public:
-          if not IsPublicIP(dwAddr) then
-            continue;
-        tiaIPv4Private:
-          if IsPublicIP(dwAddr) then
-            continue;
+      if (dwAddr <> $0100007f) and
+         (dwAddr <> 0) then
+      begin
+        case Kind of
+          tiaIPv4Public:
+            if not IsPublicIP(dwAddr) then
+              continue;
+          tiaIPv4Private:
+            if IsPublicIP(dwAddr) then
+              continue;
+          tiaIPv4DhcpPublic:
+            if IsApipaIP(dwAddr) or
+               not IsPublicIP(dwAddr) then
+              continue;
+        end;
+        IP4Text(@dwAddr, result[n]);
+        inc(n);
       end;
-      IP4Text(@dwAddr, result[n]);
-      inc(n);
-    end;
   if n <> Table.dwNumEntries then
     SetLength(result, n);
 end;
 
 
 
-{ ******************** Mac Addresses Support }
+{ ******************** MAC and DNS Addresses Support }
 
 const
   MAX_ADAPTER_ADDRESS_LENGTH = 8;
@@ -680,6 +691,9 @@ const
               GAA_FLAG_SKIP_FRIENDLY_NAME;
               // or GAA_FLAG_INCLUDE_ALL_INTERFACES;
   IfOperStatusUp = 1;
+  MAX_HOSTNAME_LEN = 128;
+  MAX_DOMAIN_NAME_LEN = 128;
+  MAX_SCOPE_ID_LEN = 256;
 
 type
   SOCKET_ADDRESS = record
@@ -734,6 +748,32 @@ type
     TunnelType: DWORD;
     // DHCP v6 Info following (not used by our code)
   end;
+  IP_ADDRESS_STRING = array [0..15] of AnsiChar;
+  IP_ADDR_IP4 = cardinal;
+  IP_ADDR_STRING = packed record
+    IpAddress: IP_ADDRESS_STRING;
+    IpMask: IP_ADDRESS_STRING;
+    Context: IP_ADDR_IP4;
+  end;
+  PIP_ADDR_STRING = ^IP_ADDR_STRING;
+  PIP_ADDR_STRING_LINKED_LIST = ^IP_ADDR_STRING_LINKED_LIST;
+  IP_ADDR_STRING_LINKED_LIST = packed record
+    Next: PIP_ADDR_STRING_LINKED_LIST;
+    Current: IP_ADDR_STRING;
+  end;
+  FIXED_INFO = packed record
+    HostName: array[0..MAX_HOSTNAME_LEN + 3] of AnsiChar;
+    DomainName: array[0..MAX_DOMAIN_NAME_LEN + 3] of AnsiChar;
+    CurrentDnsServer: PIP_ADDR_STRING;
+    DnsServerList: IP_ADDR_STRING_LINKED_LIST;
+    NodeType: DWORD;
+    ScopeId: array[0 .. MAX_SCOPE_ID_LEN + 3] of AnsiChar;
+    EnableRouting: DWORD;
+    EnableProxy: DWORD;
+    EnableDns: DWORD;
+  end;
+  PFIXED_INFO = ^FIXED_INFO;
+
 
 var
   // some iphlpapi.dll late-binded APIs via DelayedProc()
@@ -741,6 +781,48 @@ var
     pAdapterAddresses: PIP_ADAPTER_ADDRESSES; pOutBufLen: PULONG): DWORD; stdcall;
   SendARP: function(DestIp: DWORD; srcIP: DWORD; pMacAddr: pointer;
     PhyAddrLen: Pointer): DWORD; stdcall;
+  GetNetworkParams: function(pFixedInfo: PFIXED_INFO;
+    pOutBufLen: PULONG): DWORD; stdcall;
+
+function _GetDnsAddresses(usePosixEnv, getAD: boolean): TRawUtf8DynArray;
+var
+  n, l: PtrInt;
+  siz: ULONG;
+  p: PIP_ADDR_STRING_LINKED_LIST;
+  tmp: RawByteString;
+begin
+  result := nil;
+  siz := 0;
+  if not DelayedProc(GetNetworkParams, iphlpapiDll, 'iphlpapi.dll',
+           'GetNetworkParams') or
+     (GetNetworkParams(nil, @siz) <> ERROR_BUFFER_OVERFLOW) then
+    exit;
+  SetLength(tmp, siz);
+  if GetNetworkParams(pointer(tmp), @siz) <> ERROR_SUCCESS then
+    exit;
+  if getAD then
+  begin
+    l := StrLen(@PFIXED_INFO(tmp)^.DomainName);
+    if l <> 0 then
+    begin
+      SetLength(result, 1);
+      FastSetString(result[0], @PFIXED_INFO(tmp)^.DomainName, l);
+    end;
+    exit;
+  end;
+  n := 0;
+  p := @PFIXED_INFO(tmp)^.DnsServerList;
+  repeat
+    l := StrLen(@p^.Current.IpAddress);
+    if l <> 0 then
+    begin
+      SetLength(result, n + 1);
+      FastSetString(result[n], @p^.Current.IpAddress, l);
+      inc(n);
+    end;
+    p := p^.Next;
+  until p = nil;
+end;
 
 function RetrieveMacAddresses(UpAndDown: boolean): TMacAddressDynArray;
 var
@@ -751,29 +833,29 @@ var
 begin
   result := nil;
   siz := 0;
-  if not DelayedProc(GetAdaptersAddresses, 'iphlpapi.dll', 'GetAdaptersAddresses') or
+  if not DelayedProc(GetAdaptersAddresses, iphlpapiDll, 'iphlpapi.dll',
+           'GetAdaptersAddresses') or
      (GetAdaptersAddresses(AF_UNSPEC, GAA_FLAGS, nil, nil, @siz) <>
        ERROR_BUFFER_OVERFLOW) then
     exit;
   SetLength(tmp, siz); // around 600 bytes per interface
   p := pointer(tmp);
-  if GetAdaptersAddresses(AF_UNSPEC, GAA_FLAGS, nil, p, @siz) = ERROR_SUCCESS then
-  begin
-    n := 0;
-    repeat
-      if (p^.Flags <> 0) and
-         (UpAndDown or
-          (p^.OperStatus = IfOperStatusUp)) and
-         (p^.PhysicalAddressLength = 6) then
-      begin
-        SetLength(result, n + 1);
-        Win32PWideCharToUtf8(p^.Description, result[n].Name);
-        result[n].Address := MacToText(@p^.PhysicalAddress);
-        inc(n);
-      end;
-      p := p^.Next;
-    until p = nil;
-  end;
+  if GetAdaptersAddresses(AF_UNSPEC, GAA_FLAGS, nil, p, @siz) <> ERROR_SUCCESS then
+    exit;
+  n := 0;
+  repeat
+    if (p^.Flags <> 0) and
+       (UpAndDown or
+        (p^.OperStatus = IfOperStatusUp)) and
+       (p^.PhysicalAddressLength = 6) then
+    begin
+      SetLength(result, n + 1);
+      Win32PWideCharToUtf8(p^.Description, result[n].Name);
+      result[n].Address := MacToText(@p^.PhysicalAddress);
+      inc(n);
+    end;
+    p := p^.Next;
+  until p = nil;
 end;
 
 function GetRemoteMacAddress(const IP: RawUtf8): RawUtf8;
@@ -786,7 +868,7 @@ begin
   result := '';
   dwremoteIP := inet_addr(pointer(IP));
   if (dwremoteIP <> 0) and
-     DelayedProc(SendARP, 'iphlpapi.dll', 'SendARP') then
+     DelayedProc(SendARP, iphlpapiDll, 'iphlpapi.dll', 'SendARP') then
   begin
     PhyAddrLen := 8;
     if SendARP(dwremoteIP, 0, @pMacAddr, @PhyAddrLen) = NO_ERROR then
@@ -979,6 +1061,12 @@ function PollSocketClass: TPollSocketClass;
 begin
   result := TPollSocketSelect;
 end;
+
+function PollFewSockets: TPollSocketAbstract;
+begin
+  result := TPollSocketSelect.Create(nil);
+end;
+
 
 
 { ******************** TLS / HTTPS Encryption Abstract Layer }

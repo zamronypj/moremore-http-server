@@ -408,11 +408,12 @@ type
   /// define a set of well-known SID
   TWellKnownSids = set of TWellKnownSid;
 
-  /// custom binary buffer type which can be used to manage a Windows SID instance
+  /// custom binary buffer type used as convenient Windows SID storage
   RawSid = type RawByteString;
 
 
 /// a wrapper around MemCmp() on two Security IDentifier binary buffers
+// - will first compare by length, then by content
 function SidCompare(a, b: PSid): integer;
 
 /// compute the actual binary length of a Security IDentifier buffer, in bytes
@@ -422,6 +423,9 @@ function SidLength(sid: PSid): PtrInt;
 /// allocate a RawSid instance from a PSid raw handler
 procedure ToRawSid(sid: PSid; out result: RawSid);
 
+/// check if a RawSid binary buffer has the expected length of a valid SID
+function IsValidSid(const sid: RawSid): boolean;
+
 /// convert a Security IDentifier as text, following the standard representation
 procedure SidToTextShort(sid: PSid; var result: shortstring);
 
@@ -430,7 +434,6 @@ function SidToText(sid: PSid): RawUtf8; overload;
 
 /// convert a Security IDentifier as text, following the standard representation
 function SidToText(const sid: RawSid): RawUtf8; overload;
-  {$ifdef HASINLINE} inline; {$endif}
 
 /// parse a Security IDentifier text, following the standard representation
 // - won't support hexadecimal IdentifierAuthority, i.e. S-1-0x######-....
@@ -769,7 +772,7 @@ var
   OSVersionInfoEx: RawUtf8;
   /// the current Operating System version, as retrieved for the current process
   // and computed by ToTextOS(OSVersionInt32)
-  // - contains e.g. 'Windows Vista' or 'Ubuntu 5.4.0'
+  // - contains e.g. 'Windows Vista' or 'Ubuntu Linux 5.4.0'
   OSVersionShort: RawUtf8;
 
   /// some textual information about the current CPU
@@ -1060,7 +1063,9 @@ var
   SystemInfo: record
     /// retrieved from libc's getpagesize() - is expected to not be 0
     dwPageSize: cardinal;
-    /// retrieved from HW_NCPU (BSD) or /proc/cpuinfo (Linux)
+    /// the number of available logical CPUs
+    // - retrieved from HW_NCPU (BSD) or /proc/cpuinfo (Linux)
+    // - see CpuSockets for the number of physical CPU sockets
     dwNumberOfProcessors: cardinal;
     /// meaningful system information, as returned by fpuname()
     uts: record
@@ -1431,6 +1436,7 @@ function GetSmbios(info: TSmbiosBasicInfo): RawUtf8;
 // - otherwise, will compute a genuine hash from known hardware information
 // (CPU, Bios, MAC) and store it in a local file for the next access, e.g. into
 // '/var/tmp/.synopse.uid' on POSIX
+// - on Mac, include the mormot.core.os.mac unit to properly read this UUID
 // - note: some BIOS have no UUID, so we fallback to our hardware hash on those
 procedure GetComputerUuid(out uuid: TGuid);
 
@@ -1445,6 +1451,8 @@ type
   HWND          = Windows.HWND;
   BOOL          = Windows.BOOL;
   LARGE_INTEGER = Windows.LARGE_INTEGER;
+  TFileTime     = Windows.FILETIME;
+  PFileTime     = ^TFileTime;
 
   /// the known Windows Registry Root key used by TWinRegistry.ReadOpen
   TWinRegistryRoot = (
@@ -1727,7 +1735,33 @@ function ReadRegString(Key: THandle; const Path, Value: string): string;
 
 /// convenient late-binding of any external library function
 // - just wrapper around LoadLibray + GetProcAddress once over a pointer
-function DelayedProc(var api; libname: PChar; procname: PAnsiChar): boolean;
+function DelayedProc(var api; var lib: THandle;
+  libname: PChar; procname: PAnsiChar): boolean;
+
+type
+  /// encapsulate a PROPVARIANT Windows type into an opaque binary buffer
+  // - some kind of enhanced variant, on which VariantToInt64, VariantToUtf8 and
+  // VariantToDateTime do work at least for the varOle* extended types
+  TPropVariant = object
+    /// map the stored value
+    Value: TVarData;
+    /// fill the instance with zeros
+    procedure Init;
+      {$ifdef HASINLINE}inline;{$endif}
+    /// finalize an instance - i.e. free any BSTR stored
+    procedure Clear;
+      {$ifdef HASINLINE}inline;{$endif}
+    function ToInt: Int64;
+      {$ifdef HASINLINE}inline;{$endif}
+  end;
+
+const
+  // map varOleInt/varOleUInt/varOlePAnsiChar/varOlePWideChar/varOleFileTime
+  VT_INT      = 22;
+  VT_UINT     = 23;
+  VT_LPSTR    = 30;
+  VT_LPWSTR   = 31;
+  VT_FILETIME = 64;
 
 type
   HCRYPTPROV = pointer;
@@ -2186,8 +2220,13 @@ var
   // - this unit will make icu.Done in its finalization section
   icu: TIcuLibrary;
 
+  /// contains the current POSIX kernel revision, as one 24-bit integer
+  // - allow quick comparison mainly for kernel feature checking
+  // - e.g. on Linux, may equal $030d02 for 3.13.2, or $020620 for 2.6.32
+  KernelRevision: cardinal;
 
-{$ifdef OSLINUX} { the systemd API is Linux-specific }
+
+{$ifdef OSLINUX} { some Linux-specific APIs (e.g. systemd or eventfd) }
 
 const
   /// The first passed file descriptor is fd 3
@@ -2253,6 +2292,26 @@ var
   // - typical use is to check sd.IsAvailable then the proper sd.*() functions
   // - this unit will make sd.Done in its finalization section
   sd: TSystemD;
+
+/// a wrapper to the eventfd() syscall
+// - returns 0 if the kernel does not support eventfd2 (before 2.6.27) or
+// if the platform is not supported (only validated on Linux x86_64 by now)
+// - returns a file descriptor handle on success, which should be fpclose()
+function LinuxEventFD(nonblocking, semaphore: boolean): integer;
+
+/// wrapper to read from a eventfd() file
+// - return 1 and decrement the counter by 1 in semaphore mode
+// - return the current counter value and set it to 0 in non-semaphor mode
+// - may be blocking or not blocking, depending on how LinuxEventFD() was called
+// - return -1 on error
+function LinuxEventFDRead(fd: integer): Int64;
+
+/// wrapper to write to a eventfd() file
+procedure LinuxEventFDWrite(fd: integer; count: QWord);
+
+/// wrapper to wait for a eventfd() file read
+// - return true if was notified for reading, or false on timeout
+function LinuxEventFDWait(fd: integer; ms: integer): boolean;
 
 {$endif OSLINUX}
 
@@ -2339,7 +2398,7 @@ type
   TOSLightMutex = TRTLCriticalSection;
 
 {$ifdef OSLINUX}
-  {$define OSPTHREADSLIB} // direct pthread calls were tested on Linux only
+  {$define OSPTHREADSLIB}    // direct pthread calls were tested on Linux only
 {$endif OSLINUX}
 {$ifdef OSDARWIN}
   {$define OSPTHREADSSTATIC} // direct pthread calls from the 'c' library
@@ -2351,9 +2410,9 @@ type
 // some pthread_mutex_*() API defined here for proper inlining
 {$ifdef OSPTHREADSLIB}
 var
-  pthread_mutex_lock: function(mutex: pointer): integer; cdecl;
+  pthread_mutex_lock:    function(mutex: pointer): integer; cdecl;
   pthread_mutex_trylock: function(mutex: pointer): integer; cdecl;
-  pthread_mutex_unlock: function(mutex: pointer): integer; cdecl;
+  pthread_mutex_unlock:  function(mutex: pointer): integer; cdecl;
 {$endif OSPTHREADSLIB}
 {$ifdef OSPTHREADSSTATIC}
 function pthread_mutex_lock(mutex: pointer): integer; cdecl;
@@ -2611,6 +2670,8 @@ function UnixMSTimeUtcFast: TUnixMSTime;
 const
   /// number of days offset between the Unix Epoch (1970) and TDateTime origin
   UnixDelta = 25569;
+  /// number of Windows TFileTime ticks (100ns) from year 1601 to 1970
+  UnixFileTimeDelta = 116444736000000000;
 
 /// the number of minutes bias in respect to UTC/GMT date/time
 // - as retrieved via -GetLocalTimeOffset() at startup
@@ -2734,11 +2795,10 @@ function FileSetDateFromWindowsTime(const Dest: TFileName; WinTime: integer): bo
 // - used e.g. by FileSetDateFromWindowsTime() on POSIX
 function WindowsFileTimeToDateTime(WinTime: integer): TDateTime;
 
-/// convert a Windows API File 64-bit TimeStamp into a regular TDateTime
+/// convert a Windows API File 64-bit TimeStamp into a regular TUnixMSTime
 // - i.e. a FILETIME value as returned by GetFileTime() Win32 API
-// - returns 0 if the conversion failed
 // - some binary formats (e.g. ISO 9660) has such FILETIME fields
-function WindowsFileTime64ToDateTime(WinTime: QWord): TDateTime;
+function WindowsFileTime64ToUnixMSTime(WinTime: QWord): TUnixMSTime;
 
 /// low-level conversion of a TDateTime into a Windows File 32-bit TimeStamp
 // - returns 0 if the conversion failed
@@ -2872,7 +2932,7 @@ type
       read fDontReleaseHandle write fDontReleaseHandle;
   end;
 
-  /// a TFileStream which supports FileName longer than MAX_PATH
+  /// a TFileStream replacement which supports FileName longer than MAX_PATH
   TFileStreamEx = class(TFileStreamFromHandle)
   Private
     fFileName : TFileName;
@@ -2898,18 +2958,21 @@ type
     function Write(const Buffer; Count: Longint): Longint; override;
   end;
 
+/// a wrapper around FileRead() to ensure a whole memory buffer is retrieved
+// - on Windows, will read by 16MB chunks to avoid ERROR_NO_SYSTEM_RESOURCES
+// - will call FileRead() and retry up to Size bytes are filled in the buffer
+// - return true if all memory buffer has been read, or false on error
+function FileReadAll(F: THandle; Buffer: pointer; Size: PtrInt): boolean;
 
 /// overloaded function optimized for one pass reading of a (huge) file
 // - will use e.g. the FILE_FLAG_SEQUENTIAL_SCAN flag under Windows, as stated
 // by http://blogs.msdn.com/b/oldnewthing/archive/2012/01/20/10258690.aspx
-// - on Windows, to avoid ERROR_NO_SYSTEM_RESOURCES problems when calling
-// FileRead() for chunks bigger than 32MB on files opened with this flag, so you
-// should better FileRead() over e.g. 16MB chunks max (as StringFromFile does)
+// - call FileReadAll() instead of FileRead() to retrieve a whole data buffer
 // - on POSIX, calls fpOpen(pointer(FileName),O_RDONLY) with no fpFlock() call
 // - is used e.g. by StringFromFile() or HashFile() functions
 function FileOpenSequentialRead(const FileName: TFileName): integer;
 
-/// returns a TFileStream optimized for one pass file reading
+/// returns a TFileStreamFromHandle optimized for one pass file reading
 // - will use FileOpenSequentialRead(), i.e. FILE_FLAG_SEQUENTIAL_SCAN on Windows
 // - on POSIX, calls fpOpen(pointer(FileName),O_RDONLY) with no fpFlock() call
 // - is used e.g. by TRestOrmServerFullMemory and TAlgoCompress
@@ -2992,6 +3055,10 @@ function AnsiCompareFileName(const S1, S2 : TFileName): integer;
 // - returns the full expanded directory name, including trailing path delimiter
 // - returns '' on error, unless RaiseExceptionOnCreationFailure is true
 function EnsureDirectoryExists(const Directory: TFileName;
+  RaiseExceptionOnCreationFailure: boolean = false): TFileName;
+
+/// just a wrapper around EnsureDirectoryExists(NormalizeFileName(Directory))
+function NormalizeDirectoryExists(const Directory: TFileName;
   RaiseExceptionOnCreationFailure: boolean = false): TFileName;
 
 /// delete the content of a specified directory
@@ -3236,6 +3303,11 @@ function RetrieveProcessInfo(PID: cardinal; out KernelTime, UserTime: Int64;
 // - allocreserved and allocused are set only if withalloc is TRUE
 function GetMemoryInfo(out info: TMemoryInfo; withalloc: boolean): boolean;
 
+/// retrieve some human-readable text from GetMemoryInfo
+// - numbers are rounded up to a single GB number with no decimals
+// - returns e.g. 'used 6GB/16GB (35% free)' text
+function GetMemoryInfoText: RawUtf8;
+
 /// retrieve low-level information about a given disk partition
 // - as used by TSynMonitorDisk and GetDiskPartitionsText()
 // - warning: aDriveFolderOrFile may be modified at input
@@ -3356,7 +3428,8 @@ function PosixParseHex32(p: PAnsiChar): integer;
 {$endif OSWINDOWS}
 
 /// internal function to avoid linking mormot.core.buffers.pas
-function _oskb(Size: cardinal): string;
+// - will round up the value to fit in a single number without decimals
+function _oskb(Size: QWord): string;
 
 /// direct conversion of a UTF-8 encoded string into a console OEM-encoded string
 // - under Windows, will use the CP_OEM encoding
@@ -3992,13 +4065,15 @@ type
   end;
 
   /// our light cross-platform TEvent-like component
-  // - on POSIX, FPC will use PRTLEvent which is lighter than TEvent BasicEvent
+  // - on Linux, will use eventfd() in blocking and non-semaphore mode
+  // - on other POSIX, will use PRTLEvent which is lighter than TEvent BasicEvent
   // - only limitation is that we don't know if WaitFor is signaled or timeout,
   // but this is not a real one in practice since most code don't need it
   // or has already its own flag in its implementation logic
   TSynEvent = class
   protected
     fHandle: pointer; // Windows THandle or FPC PRTLEvent
+    fFD: integer;     // for eventfd()
   public
     /// initialize an instance of cross-platform event
     constructor Create;
@@ -4012,6 +4087,7 @@ type
       {$ifdef OSPOSIX} inline; {$endif}
     /// wait until SetEvent is called from another thread, with a maximum time
     // - does not return if it was signaled or timeout
+    // - WARNING: you should wait from a single thread at once
     procedure WaitFor(TimeoutMS: integer);
       {$ifdef OSPOSIX} inline; {$endif}
     /// wait until SetEvent is called from another thread, with no maximum time
@@ -4019,6 +4095,9 @@ type
       {$ifdef OSPOSIX} inline; {$endif}
     /// calls SleepHiRes() in steps while checking terminated flag and this event
     function SleepStep(var start: Int64; terminated: PBoolean): Int64;
+    /// could be used to tune your algorithm if the eventfd() API is used
+    function IsEventFD: boolean;
+      {$ifdef HASINLINE} inline; {$endif}
   end;
 
 
@@ -5124,22 +5203,22 @@ begin
   result := false;
 end;
 
-function _oskb(Size: cardinal): string;
+function _oskb(Size: QWord): string;
 const
   _U: array[0..2] of string[3] = ('GB', 'MB', 'KB');
 var
   u, v: cardinal;
 begin
   u := 0;
-  v := Size shr 30;
+  v := (Size + 1 shl 29) shr 30; // "+ 1 shl ##" to round up the value
   if v = 0 then
   begin
     inc(u);
-    v := Size shr 20;
+    v := (Size + 1 shl 19) shr 20;
     if v = 0 then
     begin
       inc(u);
-      v := Size shr 10;
+      v := (Size + 1 shl 9) shr 10;
     end;
   end;
   result := format('%d%s', [v, _U[u]]);
@@ -5208,9 +5287,21 @@ begin
   FastSetString(result, @tmp[1], ord(tmp[0]));
 end;
 
+function IsValidSid(const sid: RawSid): boolean;
+var
+  l: PtrInt;
+begin
+  l := length(sid);
+  result := (l >= SizeOf(TSidAuth) + 2) and
+            (SidLength(pointer(sid)) = l)
+end;
+
 function SidToText(const sid: RawSid): RawUtf8;
 begin
-  result := SidToText(pointer(sid));
+  if IsValidSid(sid) then
+    result := SidToText(pointer(sid))
+  else
+    result := '';
 end;
 
 // GetNextCardinal() on POSIX does not ignore trailing '-'
@@ -5510,6 +5601,10 @@ begin
     result := OS_NAME[osv.os];
 end;
 
+const
+  LINUX_TEXT: array[boolean] of string[7] = (
+    '', 'Linux ');
+
 function ToTextOS(osint32: integer): RawUtf8;
 var
   osv: TOperatingSystemVersion absolute osint32;
@@ -5527,8 +5622,8 @@ begin
   if (osv.os >= osLinux) and
      (osv.utsrelease[2] <> 0) then
     // include kernel number to the distribution name, e.g. 'Ubuntu Linux 5.4.0'
-    result := _fmt('%s Linux %d.%d.%d', [result, osv.utsrelease[2],
-      osv.utsrelease[1], osv.utsrelease[0]]);
+    result := _fmt('%s %s%d.%d.%d', [result, LINUX_TEXT[osv.os in OS_LINUX],
+      osv.utsrelease[2], osv.utsrelease[1], osv.utsrelease[0]]);
 end;
 
 function MatchOS(os: TOperatingSystem): boolean;
@@ -5880,11 +5975,11 @@ begin
 end;
 
 const
-  DateFileTimeDelta =  94353120000000000; // from year 1601 to 1899
+  FileTimePerMs = 10000; // a tick is 100ns
 
-function WindowsFileTime64ToDateTime(WinTime: QWord): TDateTime;
+function WindowsFileTime64ToUnixMSTime(WinTime: QWord): TUnixMSTime;
 begin
-  result := (Int64(WinTime) - DateFileTimeDelta) / 10000;
+  result := (Int64(WinTime) - UnixFileTimeDelta) div FileTimePerMs;
 end;
 
 function DirectorySize(const FileName: TFileName; Recursive: boolean = false): Int64;
@@ -6080,11 +6175,31 @@ begin
     until false;
 end;
 
+function FileReadAll(F: THandle; Buffer: pointer; Size: PtrInt): boolean;
+var
+  chunk, read: PtrInt;
+begin
+  result := false;
+  repeat
+    chunk := Size;
+    {$ifdef OSWINDOWS}
+    if chunk > 16 shl 20 then
+      chunk := 16 shl 20; // to avoid ERROR_NO_SYSTEM_RESOURCES errors
+    {$endif OSWINDOWS}
+    read := FileRead(F, Buffer^, chunk);
+    if read <= 0 then
+      exit; // error reading Size bytes
+    inc(PByte(Buffer), read);
+    dec(Size, read);
+  until Size = 0;
+  result := true;
+end;
+
 function StringFromFile(const FileName: TFileName; HasNoSize: boolean): RawByteString;
 var
   F: THandle;
-  read, size, chunk: integer;
-  P: PUtf8Char;
+  size: Int64;
+  read, pos: integer;
   tmp: array[0..$7fff] of AnsiChar; // 32KB stack buffer
 begin
   result := '';
@@ -6095,38 +6210,25 @@ begin
   begin
     if HasNoSize then
     begin
-      size := 0;
+      pos := 0;
       repeat
-        read := FileRead(F, tmp, SizeOf(tmp));
+        read := FileRead(F, tmp, SizeOf(tmp)); // fill per 32KB local buffer
         if read <= 0 then
           break;
-        SetLength(result, size + read); // in-place resize
-        MoveFast(tmp, PByteArray(result)^[size], read);
-        inc(size, read);
+        SetLength(result, pos + read); // in-place resize
+        MoveFast(tmp, PByteArray(result)^[pos], read);
+        inc(pos, read);
       until false;
     end
     else
     begin
       size := FileSize(F);
-      if size > 0 then
+      if (size < MaxInt) and // 2GB seems big enough for a RawByteString
+         (size > 0) then
       begin
         SetLength(result, size);
-        P := pointer(result);
-        repeat
-          chunk := size;
-          {$ifdef OSWINDOWS}
-          if chunk > 16 shl 20 then
-            chunk := 16 shl 20; // to avoid ERROR_NO_SYSTEM_RESOURCES errors
-          {$endif OSWINDOWS}
-          read := FileRead(F, P^, chunk);
-          if read <= 0 then
-          begin
-            result := '';
-            break;
-          end;
-          inc(P, read);
-          dec(size, read);
-        until size = 0;
+        if not FileReadAll(F, pointer(result), size) then
+          result := ''; // error reading
       end;
     end;
     FileClose(F);
@@ -6383,6 +6485,13 @@ begin
         raise Exception.CreateFmt('Impossible to create folder %s', [result]);
 end;
 
+function NormalizeDirectoryExists(const Directory: TFileName;
+  RaiseExceptionOnCreationFailure: boolean): TFileName;
+begin
+  result := EnsureDirectoryExists(NormalizeFileName(Directory),
+    RaiseExceptionOnCreationFailure);
+end;
+
 function DirectoryDelete(const Directory: TFileName; const Mask: TFileName;
   DeleteOnlyFilesNotDirectory: boolean; DeletedCount: PInteger): boolean;
 var
@@ -6604,8 +6713,9 @@ begin
     // mapping is not worth it for size < 1MB which can be just read at once
     GetMem(fBuf, fBufSize);
     FileSeek64(fFile, aCustomOffset, soFromBeginning);
-    result := PtrUInt(FileRead(fFile, fBuf^, fBufSize)) = fBufSize;
-    if not result then
+    if FileReadAll(fFile, fBuf, fBufSize) then
+      result := true
+    else
     begin
       Freemem(fBuf);
       fBuf := nil;
@@ -6837,6 +6947,17 @@ begin
   result := COMPILER_VERSION;
 end;
 {$endif PUREMORMOT2}
+
+function GetMemoryInfoText: RawUtf8;
+var
+  info: TMemoryInfo;
+begin
+  if GetMemoryInfo(info, false) then
+    _fmt('used %s/%s (%d%s free)', [_oskb(info.memtotal - info.memfree),
+      _oskb(info.memtotal), info.percent, '%'], result)
+  else
+    result := '';
+end;
 
 function ConsoleReadBody: RawByteString;
 var
@@ -8491,6 +8612,15 @@ begin
     until result >= endtix;
 end;
 
+function TSynEvent.IsEventFD: boolean;
+begin
+  {$ifdef HASEVENTFD}
+  result := fFD <> 0;
+  {$else}
+  result := false;
+  {$endif HASEVENTFD}
+end;
+
 
 { TLecuyerThreadSafe }
 
@@ -8982,7 +9112,6 @@ begin
   RawExceptionIntercepted := true;
   {$endif NOEXCEPTIONINTERCEPT}
 end;
-
 
 
 initialization
