@@ -224,7 +224,7 @@ function DnsSendQuestion(const Address, Port: RawUtf8;
 {$A+}
 
 type
-  /// one DNS decoded record
+  /// one DNS decoded record as stored by DnsQuery() in TDnsResult
   TDnsAnswer = record
     /// the Name of this record
     QName: RawUtf8;
@@ -255,7 +255,7 @@ type
     Authority: TDnsAnswers;
     /// the Additionals records
     Additional: TDnsAnswers;
-    /// the raw binary UDP response frame, needed by DnsParseString() decoding
+    /// the raw binary UDP response frame, needed for DnsParseString() decoding
     RawAnswer: RawByteString;
   end;
 
@@ -277,6 +277,9 @@ function DnsQuery(const QName: RawUtf8; out Res: TDnsResult;
 // - for aliases, the CNAME is ignored and only the first A is returned, e.g.
 // DnsLookup('blog.synopse.info') would simply return '62.210.254.173'
 // - will also recognize obvious values like 'localhost' or an IPv4 address
+// - this unit will register this function to mormot.net.sock's NewSocketIP4Lookup
+// - warning: executes a raw DNS query, so hosts system file is not used,
+// and no cache is involved: use TNetAddr.SetFrom() instead if you can
 function DnsLookup(const HostName: RawUtf8;
   const NameServer: RawUtf8 = ''): RawUtf8;
 
@@ -416,7 +419,7 @@ begin
     inc(Pos);
     if len = 0 then
       break;
-    while (len and DNS_RELATIVE) =  DNS_RELATIVE do
+    while (len and DNS_RELATIVE) = DNS_RELATIVE do
     begin
       if nextpos = 0 then
         nextpos := Pos + 1; // if compressed, return end of 16-bit offset
@@ -549,6 +552,7 @@ begin
   result := false;
   TimeElapsed := 0;
   QueryPerformanceMicroSeconds(start);
+  // send the DNS query
   if addr.SetFrom(Address, Port, nlUdp) <> nrOk then
     exit;
   sock := addr.NewSocket(nlUdp);
@@ -558,6 +562,7 @@ begin
       res := sock.SendTo(pointer(Request), length(Request), addr);
       if res <> nrOk then
         exit;
+      // get the response and ensure it is valid
       len := sock.RecvFrom(@tmp, SizeOf(tmp), resp);
       with PDnsHeader(@tmp)^ do
         if (len <= length(Request)) or
@@ -623,6 +628,7 @@ begin
   request := DnsBuildQuestion(QName, RR, QClass);
   if NameServer = '' then
   begin
+    // if no NameServer is specified, will ask all OS DNS in order
     servers := GetDnsAddresses;
     for i := 0 to high(servers) do
       if DnsSendQuestion(servers[i], DnsPort,
@@ -634,6 +640,7 @@ begin
   else if not DnsSendQuestion(NameServer, DnsPort,
                 request, Res.RawAnswer, Res.ElapsedMicroSec, TimeOutMS) then
     exit;
+  // we received a valid response from a DNS
   Res.Header := PDnsHeader(Res.RawAnswer)^;
   Res.Header.QuestionCount := swap(Res.Header.QuestionCount);
   Res.Header.AnswerCount := swap(Res.Header.AnswerCount);
@@ -757,6 +764,14 @@ begin
   end;
 end;
 
+function _NewSocketIP4Lookup(const HostName: RawUtf8; out IP4: cardinal): boolean;
+var
+  ip: RawUtf8;
+begin
+  ip := DnsLookup(HostName, NewSocketIP4LookupServer);
+  result := NetIsIP4(pointer(ip), @ip4);
+end;
+
 
 initialization
   assert(ord(drrHTTPS) = 65);
@@ -764,6 +779,7 @@ initialization
   assert(ord(drrEUI64) = 109);
   assert(ord(drrTKEY) = 249);
   assert(ord(drrAMTRELAY) = 260);
+  NewSocketIP4Lookup := _NewSocketIP4Lookup;
 
 end.
 

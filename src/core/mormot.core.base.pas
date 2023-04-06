@@ -3408,6 +3408,9 @@ procedure DynArrayHashTableAdjust16(P: PWordArray; deleted: cardinal; count: Ptr
 
 { ************ Efficient Variant Values Conversion }
 
+type
+  PVarType = ^TVarType;
+
 const
   /// unsigned 64bit integer variant type
   // - currently called varUInt64 in Delphi (not defined in older versions),
@@ -3425,18 +3428,20 @@ const
   /// map the Windows VT_LPWSTR extended VARENUM, i.e. a PWideChar
   // - also detected and handled by VariantToUtf8
   varOlePWideChar = 31;
-  /// map the Windows VT_LPWSTR extended VARENUM, i.e. a 64-bit TFileTime
+  /// map the Windows VT_FILETIME extended VARENUM, i.e. a 64-bit TFileTime
   // - also detected and handled by VariantToDateTime
   varOleFileTime = 64;
+  /// map the Windows VT_CLSID extended VARENUM, i.e. a by-reference PGuid
+  varOleClsid = 72;
 
   varVariantByRef = varVariant or varByRef;
-  varStringByRef = varString or varByRef;
-  varOleStrByRef = varOleStr or varByRef;
+  varStringByRef  = varString or varByRef;
+  varOleStrByRef  = varOleStr or varByRef;
 
   /// this variant type will map the current SynUnicode type
   // - depending on the compiler version
   {$ifdef HASVARUSTRING}
-  varSynUnicode = varUString;
+  varSynUnicode   = varUString;
   varUStringByRef = varUString or varByRef;
   {$else}
   varSynUnicode = varOleStr;

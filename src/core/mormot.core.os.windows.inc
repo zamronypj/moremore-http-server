@@ -277,6 +277,11 @@ var
   nano100: Int64; // TFileTime is in 100 ns unit
 {$endif CPU64}
 begin
+  if PInt64(@FT)^ = 0 then
+  begin
+    result := 0;
+    exit;
+  end;
   {$ifdef CPU64}
   FileTimeToInt64(ft, nano100);
   result := (nano100 - UnixFileTimeDelta) div 10000000;
@@ -291,6 +296,11 @@ var
   nano100: Int64; // TFileTime is in 100 ns unit
 {$endif CPU64}
 begin
+  if PInt64(@FT)^ = 0 then
+  begin
+    result := 0;
+    exit;
+  end;
   {$ifdef CPU64}
   FileTimeToInt64(ft, nano100);
   result := (nano100 - UnixFileTimeDelta) div 10000;
@@ -301,7 +311,10 @@ end;
 
 function FileTimeToDateTime(const FT: TFileTime): TDateTime;
 begin
-  result := FileTimeToUnixMSTime(FT) / MSecsPerDay + UnixDateDelta;
+  if PInt64(@FT)^ = 0 then
+    result := 0
+  else
+    result := FileTimeToUnixMSTime(FT) / MSecsPerDay + UnixDateDelta;
 end;
 
 function UnixTimeUtc: TUnixTime;
@@ -505,13 +518,13 @@ end;
 
 function WinErrorText(Code: cardinal; ModuleName: PChar): RawUtf8;
 var
-  err: integer;
+  bak: integer;
   flags, len: PtrUInt;
   src: pointer;
   cod: PUtf8Char;
   tmp: array[0..511] of WideChar;
 begin
-  err := GetLastError;
+  bak := GetLastError;
   flags := FORMAT_MESSAGE_FROM_SYSTEM;
   if ModuleName = nil then
   begin
@@ -541,7 +554,7 @@ begin
      (src <> nil) then
   begin
     // fallback to the system error message if this module as no such code
-    SetLastError(err);
+    SetLastError(bak);
     result := WinErrorText(Code, nil);
     exit;
   end;
@@ -549,7 +562,7 @@ begin
         (ord(tmp[len - 1]) in [0..32, ord('.')]) do
     dec(len); // trim right
   Win32PWideCharToUtf8(@tmp, len, result);
-  SetLastError(err);
+  SetLastError(bak);
 end;
 
 function GetErrorText(error: integer): RawUtf8;
@@ -893,10 +906,12 @@ begin
     0, nil, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0);
 end;
 
+const
+  FILE_WRITE_ATTRIBUTES = $0100; // not defined on oldest Delphi
+
 // W32() will support length > MAX_PATH even if aFileName is UnicodeString
 function FileOpen(const aFileName: TFileName; aMode: integer): THandle;
 const
-  FILE_WRITE_ATTRIBUTES = $0100; // not defined on oldest Delphi
   ACCESS: array[0..2] of DWord = (
     GENERIC_READ,
     GENERIC_WRITE,
@@ -971,6 +986,45 @@ begin
     result := false
   else
     result := MoveFileW(W32(OldName, o), W32(NewName, n));
+end;
+
+function FileSetTime(const FileName: TFileName;
+  const Created, Accessed, Written: Int64): boolean;
+var
+  tmp: TW32Temp;
+  h: THandle;
+  pct, pat, pwt: pointer;
+begin
+  result := false;
+  h := CreateFileW(W32(FileName, tmp), FILE_WRITE_ATTRIBUTES,
+    FILE_SHARE_READ, nil, OPEN_ALWAYS, 0, 0);
+  if ValidHandle(h) then
+    try
+      // some input code may not set all properties: use what we got
+      if Created <> 0 then
+        pct := @Created
+      else if Written <> 0 then
+        pct := @Written
+      else if Accessed <> 0 then
+        pct := @Accessed
+      else
+        exit;
+      if Accessed <> 0 then
+        pat := @Accessed
+      else if Written <> 0 then
+        pat := @Written
+      else
+        pat := @Created;
+      if Written <> 0 then
+        pwt := @Written
+      else if Created <> 0 then
+        pwt := @Created
+      else
+        pwt := @Accessed;
+      result := SetFileTime(h, pct, pat, pwt);
+    finally
+      CloseHandle(h);
+    end;
 end;
 
 function CopyFile(const Source, Target: TFileName; FailIfExists: boolean): boolean;
@@ -1620,25 +1674,6 @@ begin
     GlobalUnLock;
   end;
   result := pointer(api) <> pointer(1);
-end;
-
-
-{ TPropVariant }
-
-procedure TPropVariant.Init;
-begin
-  FillCharFast(self, SizeOf(self), 0);
-end;
-
-procedure TPropVariant.Clear;
-begin
-  VarClearProc(Value);
-end;
-
-function TPropVariant.ToInt: Int64;
-begin
-  if not VariantToInt64(variant(Value), result) then
-    result := 0;
 end;
 
 
@@ -2749,7 +2784,7 @@ var
   i: PtrInt;
 begin
   result := nil;
-  if RawTokenGetInfo(tok, TokenGroups, buf) >= SizeOf(nfo^) then
+  if RawTokenGetInfo(tok, TokenGroups, buf) >= SizeOf({%H-}nfo^) then
   begin
     nfo := buf.buf;
     if nfo.GroupCount <> 0 then

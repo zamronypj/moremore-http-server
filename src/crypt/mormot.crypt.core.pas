@@ -1848,6 +1848,7 @@ type
   // - we defined a record instead of a class, to allow stack allocation and
   // thread-safe reuse of one initialized instance, e.g. for THmacSha256
   // - see TSynHasher if you expect to support more than one algorithm at runtime
+  // - can use several asm versions with HW opcodes support on x86_64 and aarch64
   TSha256 = object
   private
     Context: packed array[1..SHA_CONTEXT_SIZE] of byte;
@@ -7977,7 +7978,10 @@ procedure RawSha256Compress(var Hash; Data: pointer);
 begin
   {$ifdef ASMX64}
   if K256Aligned <> nil then
-    Sha256Sse4(Data^, Hash, 1) // from optimized Intel's Sha256Sse4.asm
+    if cfSHA in CpuFeatures then
+      Sha256ni(Data^, Hash, 1)   // Intel SHA HW opcodes
+    else
+      Sha256Sse4(Data^, Hash, 1) // Intel SSE4.2 asm
   else
   {$endif ASMX64}
   {$ifdef USEARMCRYPTO}
@@ -8014,18 +8018,6 @@ begin
   if Buffer = nil then
     exit; // avoid GPF
   inc(Data.MLen, QWord(cardinal(Len)) shl 3);
-  {$ifdef ASMX64}
-  if (K256AlignedStore <> '') and
-     (Data.Index = 0) and
-     (Len >= 64) then
-  begin
-    // use optimized Intel's Sha256Sse4.asm for whole blocks
-    Sha256Sse4(Buffer^, Data.Hash, Len shr 6);
-    inc(PByte(Buffer), Len);
-    Len := Len and 63;
-    dec(PByte(Buffer), Len);
-  end;
-  {$endif ASMX64}
   while Len > 0 do
   begin
     aLen := 64 - Data.Index;
@@ -8038,7 +8030,22 @@ begin
         Data.Index := 0;
       end
       else
-        RawSha256Compress(Data.Hash, Buffer); // avoid temporary copy
+        {$ifdef ASMX64}
+        if (K256Aligned <> nil) and
+           (Len >= 64) then
+        begin
+          // use optimized Intel x86_64 asm over whole blocks
+          if cfSHA in CpuFeatures then
+            Sha256ni(Buffer^, Data.Hash, Len shr 6)     // Intel SHA HW opcodes
+          else
+            Sha256Sse4(Buffer^, Data.Hash, Len shr 6);  // Intel SSE4.2 asm
+          aLen := Len and (not 63);
+        end
+        else
+          Sha256CompressPas(Data.Hash, Buffer);
+        {$else}
+        RawSha256Compress(Data.Hash, Buffer); // may be AARCH64 version
+        {$endif ASMX64}
       dec(Len, aLen);
       inc(PtrInt(Buffer), aLen);
     end
@@ -10020,7 +10027,7 @@ end;
 
 { TSha1 }
 
-procedure sha1Compress(var Hash: TShaHash; Data: PByteArray);
+procedure Sha1CompressPas(var Hash: TShaHash; Data: PByteArray);
 var
   A, B, C, D, E, X: cardinal;
   W: array[0..79] of cardinal;
@@ -10219,14 +10226,19 @@ begin
   // 2. Compress if more than 448-bit, (no room for 64 bit length
   if Data.Index >= 56 then
   begin
-    sha1Compress(Data.Hash, @Data.Buffer);
+    RawSha1Compress(Data.Hash, @Data.Buffer);
     FillcharFast(Data.Buffer, 56, 0);
   end;
   // Write 64 bit Buffer length into the last bits of the last block
   // (in big endian format) and do a final compress
   PCardinal(@Data.Buffer[56])^ := bswap32(TQWordRec(Data.MLen).h);
   PCardinal(@Data.Buffer[60])^ := bswap32(TQWordRec(Data.MLen).L);
-  sha1Compress(Data.Hash, @Data.Buffer);
+  {$ifdef ASMX64}
+  if cfSHA in CpuFeatures then
+    Sha1ni(Data.Buffer, Data.Hash, 64)     // Intel SHA HW opcodes
+  else
+  {$endif ASMX64}
+    Sha1CompressPas(Data.Hash, @Data.Buffer); // regular code
   // Hash -> Digest to little endian format
   bswap160(@Data.Hash, @Digest);
   // Clear Data
@@ -10274,12 +10286,20 @@ begin
       if Data.Index <> 0 then
       begin
         MoveFast(Buffer^, Data.Buffer[Data.Index], aLen);
-        sha1Compress(Data.Hash, @Data.Buffer);
+        RawSha1Compress(Data.Hash, @Data.Buffer);
         Data.Index := 0;
       end
       else
         // direct compression to avoid uneeded temporary copy
-        sha1Compress(Data.Hash, Buffer);
+        {$ifdef ASMX64}
+        if cfSHA in CpuFeatures then
+        begin
+          aLen := Len and (not 63);
+          Sha1ni(Buffer^, Data.Hash, aLen);    // Intel SHA HW opcodes
+        end
+        else
+        {$endif ASMX64}
+          Sha1CompressPas(Data.Hash, Buffer); // regular code
       dec(Len, aLen);
       inc(PByte(Buffer), aLen);
     end
@@ -10295,6 +10315,16 @@ end;
 procedure TSha1.Update(const Buffer: RawByteString);
 begin
   Update(pointer(Buffer), length(Buffer));
+end;
+
+procedure RawSha1Compress(var Hash; Data: pointer);
+begin
+  {$ifdef ASMX64}
+  if cfSHA in CpuFeatures then
+    Sha1ni(Data^, Hash, 64)     // Intel SHA HW opcodes
+  else
+  {$endif ASMX64}
+    Sha1CompressPas(TShaHash(Hash), Data); // regular code
 end;
 
 
@@ -10425,11 +10455,6 @@ end;
 procedure RawMd5Compress(var Hash; Data: pointer);
 begin
   MD5Transform(TMd5Buf(Hash), PMd5In(Data)^);
-end;
-
-procedure RawSha1Compress(var Hash; Data: pointer);
-begin
-  sha1Compress(TShaHash(Hash), Data);
 end;
 
 procedure Pbkdf2HmacSha1(const password, salt: RawByteString; count: integer;
@@ -11152,6 +11177,10 @@ var
   shablock: array[0..63] of byte;
   i: PtrInt;
 {$endif USEARMCRYPTO}
+{$ifdef ASMX64}
+var
+  dummy: THash256;
+{$endif ASMX64}
 begin
   ComputeAesStaticTables;
   {$ifdef ASMX64}
@@ -11170,7 +11199,7 @@ begin
   if (cfSSE41 in CpuFeatures) and   // PINSRD/Q
      (cfSSE3 in CpuFeatures) then   // PSHUFB
   begin
-    // optimized Intel's Sha256Sse4.asm
+    // optimized Intel's .asm using SSE4 or SHA HW opcodes
     K256Aligned := @K256;
     if PtrUInt(K256Aligned) and 15 <> 0 then
     begin
@@ -11179,6 +11208,13 @@ begin
       if PtrUInt(K256Aligned) and 15 <> 0 then
         K256Aligned := nil; // paranoid
     end;
+    if cfSHA in CpuFeatures then // detect cpuid with SSE4.1 + SHA opcodes
+      try
+        Sha256ni(dummy, dummy, 1);
+      except
+        // Intel SHA256 HW opcodes seem not available
+        exclude(CpuFeatures, cfSHA);
+      end;
   end;
   {$endif ASMX64}
   {$ifdef USEAESNIHASH}

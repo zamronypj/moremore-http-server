@@ -143,9 +143,14 @@ type
   private
     // opaque wrapper with len: sockaddr_un=110 (POSIX) or sockaddr_in6=28 (Win)
     Addr: array[0..SOCKADDR_SIZE - 1] of byte;
+    // internal host resolution from IPv4 or NewSocketIP4Lookup (mormot.net.dns)
+    function SetFromIP4(const address: RawUtf8): boolean;
   public
     /// initialize this address from standard IPv4/IPv6 or nlUnix textual value
-    // - wrap the proper getaddrinfo/gethostbyname API
+    // - calls NewSocketIP4Lookup if available from mormot.net.dns (with a 32
+    // seconds cache) or the proper getaddrinfo/gethostbyname OS API
+    // - see also NewSocket() overload or GetSocketAddressFromCache() if you
+    // want to use the global NewSocketAddressCache
     function SetFrom(const address, addrport: RawUtf8; layer: TNetLayer): TNetResult;
     /// returns the network family of this address
     function Family: TNetFamily;
@@ -172,11 +177,14 @@ type
     function Port: TNetPort;
     /// set the network port (0..65535) of this address
     function SetPort(p: TNetPort): TNetResult;
+    /// set a given 32-bit IPv4 address and its network port (0..65535)
+    function SetIP4Port(ipv4: cardinal; netport: TNetPort): TNetResult;
     /// compute the number of bytes actually used in this address buffer
     function Size: integer;
       {$ifdef FPC}inline;{$endif}
     /// create a new TNetSocket instance on this network address
     // - returns nil on API error
+    // - SetFrom() should have been called before running this method
     function NewSocket(layer: TNetLayer): TNetSocket;
   end;
 
@@ -277,6 +285,7 @@ type
     /// called by NewSocket() if connection failed, and force DNS resolution
     procedure Flush(const Host: RawUtf8);
     /// you can call this method to change the default timeout of 10 minutes
+    // - is likely to flush the cache
     procedure SetTimeOut(aSeconds: integer);
   end;
 
@@ -292,11 +301,14 @@ function NewSocket(const address, port: RawUtf8; layer: TNetLayer;
   dobind: boolean; connecttimeout, sendtimeout, recvtimeout, retry: integer;
   out netsocket: TNetSocket; netaddr: PNetAddr = nil; bindReusePort: boolean = false): TNetResult;
 
-/// resolve the TNetAddr of the address:port layer - maybe from cache
+/// delete a hostname from TNetAddr.SetFrom internal short-living cache
+procedure NetAddrFlush(const hostname: RawUtf8);
+
+/// resolve the TNetAddr of the address:port layer - maybe from NewSocketAddressCache
 function GetSocketAddressFromCache(const address, port: RawUtf8;
   layer: TNetLayer; out addr: TNetAddr; var fromcache, tobecached: boolean): TNetResult;
 
-/// check if an address is known from the current DNS
+/// check if an address is known from the current NewSocketAddressCache
 // - calls GetSocketAddressFromCache() so would use the internal cache, if any
 function ExistSocketAddressFromCache(const host: RawUtf8): boolean;
 
@@ -311,9 +323,25 @@ var
   /// contains the raw Socket API version, as returned by the Operating System
   SocketApiVersion: RawUtf8;
 
-  /// used by NewSocket() to cache the host names
+  /// callback used by NewSocket() to resolve the host name as IPv4
+  // - not assigned by default, to use the OS default API, i.e. getaddrinfo()
+  // on Windows, and gethostbyname() on POSIX
+  // - if you include mormot.net.dns, its own IPv4 DNS resolution function will
+  // be registered here
+  // - this level or DNS resolution has a simple in-memory cache of 32 seconds
+  // - NewSocketAddressCache from mormot.net.client will implement a more
+  // tunable cache, for both IPv4 and IPv6 resolutions
+  NewSocketIP4Lookup: function(const HostName: RawUtf8; out IP4: cardinal): boolean;
+
+  /// the DNS resolver address to be used by NewSocketIP4Lookup() callback
+  // - to override default mormot.net.dns behavior which is to query all DNS
+  // servers known by the OS
+  NewSocketIP4LookupServer: RawUtf8;
+
+  /// interface used by NewSocket() to cache the host names
   // - avoiding DNS resolution is a always a good idea
-  // - implemented by mormot.net.client unit using a TSynDictionary
+  // - if you include mormot.net.client, will register its own implementation
+  // class using a TSynDictionary over a 10 minutes default timeout
   // - you may call its SetTimeOut or Flush methods to tune the caching
   NewSocketAddressCache: INewSocketAddressCache;
 
@@ -340,21 +368,28 @@ function ToText(res: TNetResult): PShortString; overload;
 { ******************** Mac and IP Addresses Support }
 
 type
-  /// the filter used by IsPublicIP()
+  /// the filter used by GetIPAddresses() and IP4Filter()
+  // - the "Public"/"Private" suffix maps IsPublicIP() IANA ranges of IPv4
+  // address space, i.e. 10.x.x.x, 172.16-31.x.x and 192.168.x.x addresses
+  // - the "Dhcp" suffix excludes IsApipaIP() 169.254.0.1 - 169.254.254.255
+  // range, i.e. ensure the address actually came from a real DHCP server
   // - tiaAny always return true, for any IPv4 or IPv6 address
   // - tiaIPv4 identify any IPv4 address
   // - tiaIPv6 identify any IPv6 address
-  // - tiaIPv4Public identify any IPv4 address excluding  ranges, i.e. IANA private IPv4 address space
-  // - tiaIPv4Private identify IPv4 address only within this IANA address space
-  // - tiaIPv4DhcpPublic identify any IPv4 address exclusing IANA private IPv4
-  // address space and APIPA Windows Range
+  // - tiaIPv4Public identify any IPv4 public address
+  // - tiaIPv4Private identify any IPv4 private address
+  // - tiaIPv4Dhcp identify any IPv4 address excluding APIPA range
+  // - tiaIPv4DhcpPublic identify any IPv4 public address excluding APIPA range
+  // - tiaIPv4DhcpPrivate identify any IPv4 private address excluding APIPA range
   TIPAddress = (
     tiaAny,
     tiaIPv4,
     tiaIPv6,
     tiaIPv4Public,
     tiaIPv4Private,
-    tiaIPv4DhcpPublic);
+    tiaIPv4Dhcp,
+    tiaIPv4DhcpPublic,
+    tiaIPv4DhcpPrivate);
 
 /// detect IANA private IPv4 address space from its 32-bit raw value
 // - i.e. 10.x.x.x, 172.16-31.x.x and 192.168.x.x addresses
@@ -364,7 +399,13 @@ function IsPublicIP(ip4: cardinal): boolean;
 // - Automatic Private IP Addressing (APIPA) is used by Windows clients to
 // setup some IP in case of local DHCP failure
 // - it covers the 169.254.0.1 - 169.254.254.255 range
+// - see tiaIPv4Dhcp, tiaIPv4DhcpPublic and tiaIPv4DhcpPrivate filters
 function IsApipaIP(ip4: cardinal): boolean;
+
+/// filter an IPv4 address to a given TIPAddress kind
+// - return true if the supplied address does match the filter
+// - by design, both 0.0.0.0 and 127.0.0.1 always return false
+function IP4Filter(ip4: cardinal; filter: TIPAddress): boolean;
 
 /// convert an IPv4 raw value into a ShortString text
 // - won't use the Operating System network layer API so works on XP too
@@ -406,11 +447,12 @@ function MacToHex(mac: PByteArray; maclen: PtrInt = 6): RawUtf8;
 /// enumerate all IP addresses of the current computer
 // - may be used to enumerate all adapters
 // - no cache is used for this function - consider GetIPAddressesText instead
+// - by design, 127.0.0.1 is excluded from the list
 function GetIPAddresses(Kind: TIPAddress = tiaIPv4): TRawUtf8DynArray;
 
 /// returns all IP addresses of the current computer as a single CSV text
 // - may be used to enumerate all adapters
-// - an internal cache of the result with Sep=' ' is refreshed every 32 seconds
+// - an internal cache of the result is refreshed every 32 seconds
 function GetIPAddressesText(const Sep: RawUtf8 = ' ';
   Kind: TIPAddress = tiaIPv4): RawUtf8;
 
@@ -464,6 +506,16 @@ var
 // machine is not actually registered for / part of the domain, but has access
 // to the domain controller
 function GetDomainNames(usePosixEnv: boolean = false): TRawUtf8DynArray;
+
+/// resolve a host name from the OS hosts file content
+// - i.e. use a cache of /etc/hosts or c:\windows\system32\drivers\etc\hosts
+// - returns true and the IPv4 address of the stored host found
+// - if the file is modified on disk, the internal cache will be flushed
+function GetKnownHost(const HostName: RawUtf8; out ip4: cardinal): boolean;
+
+/// append a custom host/ipv4 pair in addition to the OS hosts file
+// - to be appended to GetKnownHost() internal cache
+procedure RegisterKnownHost(const HostName, Ip4: RawUtf8);
 
 
 { ******************** TLS / HTTPS Encryption Abstract Layer }
@@ -1065,7 +1117,11 @@ function NetStartWith(p, up: PUtf8Char): boolean;
 
 /// check is the supplied address text is on format '1.2.3.4'
 // - will optionally fill a 32-bit binary buffer with the decoded IPv4 address
+// - end text parsing at ending #0 or any char <= ' '
 function NetIsIP4(text: PUtf8Char; value: PByte = nil): boolean;
+
+/// parse a text input buffer until the end space or EOL
+function NetGetNextSpaced(var P: PUtf8Char): RawUtf8;
 
 
 { ********* TCrtSocket Buffered Socket Read/Write Class }
@@ -1535,7 +1591,186 @@ end;
 
 { ******** TNetAddr Cross-Platform Wrapper }
 
+{ TNetHostCache }
+
+type
+  // implement a thread-safe cache of IPv4 for hostnames
+  // - used e.g. by TNetAddr.SetFromIP4 and GetKnownHost
+  // - avoid the overhead of TSynDictionary for a few short-living items
+  TNetHostCache = object
+    Host: TRawUtf8DynArray;
+    Safe: TLightLock;
+    Tix, TixShr: cardinal;
+    Count, Capacity: integer;
+    IP: TCardinalDynArray;
+    function TixDeprecated: boolean;
+    procedure Add(const hostname: RawUtf8; ip4: cardinal);
+    procedure AddFrom(const other: TNetHostCache);
+    function Find(const hostname: RawUtf8; out ip4: cardinal): boolean;
+    procedure SafeAdd(const hostname: RawUtf8; ip4, deprec: cardinal);
+    function SafeFind(const hostname: RawUtf8; out ip4: cardinal): boolean;
+    procedure SafeFlush(const hostname: RawUtf8);
+  end;
+
+function TNetHostCache.TixDeprecated: boolean;
+var
+  tix32: cardinal;
+begin
+  if TixShr = 0 then
+    TixShr := 13; // refresh every 8192 ms by default
+  tix32 := mormot.core.os.GetTickCount64 shr TixShr;
+  result := tix32 <> Tix;
+  if result then
+    Tix := tix32;
+end;
+
+procedure TNetHostCache.Add(const hostname: RawUtf8; ip4: cardinal);
+begin
+  if hostname = '' then
+    exit;
+  if Capacity = Count then
+  begin
+    Capacity := NextGrow(Capacity);
+    SetLength(Host, Capacity);
+    SetLength(IP, Capacity);
+  end;
+  Host[Count] := hostname;
+  IP[Count] := ip4;
+  inc(Count);
+end;
+
+procedure TNetHostCache.AddFrom(const other: TNetHostCache);
+var
+  i: PtrInt;
+begin
+  for i := 0 to other.Count - 1 do
+    Add(other.Host[i], other.IP[i]);
+end;
+
+function FastHostCacheFind(h: PRawUtf8; const hostname: RawUtf8;
+  hostnamelen: TStrLen; n: PtrInt): PtrInt;
+begin
+  if hostnamelen <> 0 then
+    for result := 0 to n - 1 do
+      if (PStrLen(PPAnsiChar(h)^ - _STRLEN)^ = hostnamelen) and
+         PropNameEquals(hostname, h^) then // case insensitive search
+        exit
+      else
+        inc(h);
+  result := -1;
+end;
+
+function TNetHostCache.Find(const hostname: RawUtf8; out ip4: cardinal): boolean;
+var
+  i: PtrInt;
+begin
+  result := false;
+  if Count = 0 then
+    exit;
+  i := FastHostCacheFind(pointer(Host), hostname, length(hostname), Count);
+  if i < 0 then
+    exit;
+  ip4 := IP[i];
+  result := true;
+end;
+
+procedure TNetHostCache.SafeAdd(const hostname: RawUtf8; ip4, deprec: cardinal);
+begin
+  Safe.Lock;
+  if deprec <> 0 then
+  begin
+    TixShr := deprec; // may override e.g. to 15, i.e. 32768 ms cache
+    if TixDeprecated then // flush any previous entry if needed
+      Count := 0;
+  end;
+  Add(hostname, ip4);
+  Safe.UnLock;
+end;
+
+function TNetHostCache.SafeFind(const hostname: RawUtf8; out ip4: cardinal): boolean;
+begin
+  result := false;
+  if Count = 0 then
+    exit;
+  Safe.Lock;
+  if TixDeprecated then
+    Count := 0
+  else
+    result := Find(hostname, ip4);
+  Safe.UnLock;
+end;
+
+procedure TNetHostCache.SafeFlush(const hostname: RawUtf8);
+var
+  i, n: PtrInt;
+begin
+  if (Count = 0) or
+     (hostname = '') then
+    exit;
+  Safe.Lock;
+  try
+    if TixDeprecated then
+      Count := 0
+    else
+    begin
+      i := FastHostCacheFind(pointer(Host), hostname, length(hostname), Count);
+      if i < 0 then
+        exit;
+      n := Count - 1;
+      Count := n;
+      Host[i] := '';
+      dec(n, i);
+      if n <= 0 then
+        exit;
+      MoveFast(pointer(Host[i + 1]), pointer(Host[i]), n * SizeOf(pointer));
+      MoveFast(IP[i + 1], IP[i], n * SizeOf(cardinal));
+    end;
+  finally
+    Safe.UnLock;
+  end;
+end;
+
+
 { TNetAddr }
+
+var
+  NetAddrCache: TNetHostCache; // small internal cache valid for 32 seconds only
+
+procedure NetAddrFlush(const hostname: RawUtf8);
+begin
+  NetAddrCache.SafeFlush(hostname);
+end;
+
+function TNetAddr.SetFromIP4(const address: RawUtf8): boolean;
+begin
+  result := false;
+  // caller did set addr4.sin_port and other fields to 0
+  with PSockAddr(@Addr)^ do
+    if (address = cLocalhost) or
+       (address = c6Localhost) or
+       PropNameEquals(address, 'localhost') then
+      PCardinal(@sin_addr)^ := cLocalhost32 // 127.0.0.1
+    else if (address = cBroadcast) or
+            (address = c6Broadcast) then
+      PCardinal(@sin_addr)^ := cardinal(-1) // 255.255.255.255
+    else if (address = cAnyHost) or
+            (address = c6AnyHost) then
+      // keep 0.0.0.0
+    else if NetIsIP4(pointer(address), @sin_addr) or
+            GetKnownHost(address, PCardinal(@sin_addr)^) or
+            NetAddrCache.SafeFind(address, PCardinal(@sin_addr)^) then
+      // numerical IPv4, /etc/hosts, or cached entry
+    else if (Assigned(NewSocketIP4Lookup) and
+             NewSocketIP4Lookup(address, PCardinal(@sin_addr)^)) then
+      // cache value found from mormot.net.dns lookup for 1 shl 15 = 32 seconds
+      NetAddrCache.SafeAdd(address, PCardinal(@sin_addr)^, {tixshr=}15)
+    else
+      // return result=false if unknown
+      exit;
+  // we found the IPv4 matching this address
+  PSockAddr(@Addr)^.sin_family := AF_INET;
+  result := true;
+end;
 
 function TNetAddr.Family: TNetFamily;
 begin
@@ -1588,7 +1823,7 @@ begin
     if sa_family = AF_INET then
       result := cardinal(sin_addr) // may return cLocalhost32 = 127.0.0.1
     else
-      result := 0; // AF_INET6 or AF_UNIX returns 0
+      result := 0; // AF_INET6 or AF_UNIX return 0
 end;
 
 function TNetAddr.IPShort(withport: boolean): ShortString;
@@ -1643,13 +1878,21 @@ function TNetAddr.SetPort(p: TNetPort): TNetResult;
 begin
   with PSockAddr(@Addr)^ do
     if (sa_family in [AF_INET, AF_INET6]) and
-       (p <= 65535) then
+       (p <= 65535) then // p may equal 0 to set ephemeral port
     begin
       sin_port := htons(p);
       result := nrOk;
     end
     else
       result := nrNotFound;
+end;
+
+function TNetAddr.SetIP4Port(ipv4: cardinal; netport: TNetPort): TNetResult;
+begin
+  PSockAddr(@Addr)^.sin_family := AF_INET;
+  PCardinal(@PSockAddr(@Addr)^.sin_addr)^ := ipv4;
+  PInt64(@PSockAddr(@Addr)^.sin_zero)^ := 0;
+  result := SetPort(netport);
 end;
 
 function TNetAddr.Size: integer;
@@ -1697,32 +1940,39 @@ end;
 function GetSocketAddressFromCache(const address, port: RawUtf8; layer: TNetLayer;
   out addr: TNetAddr; var fromcache, tobecached: boolean): TNetResult;
 var
-  p: cardinal;
+  p, ip4: cardinal;
 begin
   fromcache := false;
   tobecached := false;
-  if (layer in nlIP) and
-     Assigned(NewSocketAddressCache) and
-     ToCardinal(port, p, 1) then
-    if (address = '') or
-       (address = cLocalhost) or
-       (address = cAnyHost) then // for client: '0.0.0.0'->'127.0.0.1'
-      result := addr.SetFrom(cLocalhost, port, layer)
-    else if (layer = nlUnix) or
-            NetIsIP4(pointer(address)) then
-       result := addr.SetFrom(address, port, layer)
-    else if NewSocketAddressCache.Search(address, addr) then
+  if layer in nlIP then
+    if not ToCardinal(port, p, {minimal=}1) then
     begin
-      fromcache := true;
-      result := addr.SetPort(p);
+      result := nrNotFound;
+      exit;
     end
-    else
+    else if (address = '') or
+            (address = cLocalhost) or
+            PropNameEquals(address, 'localhost') or
+            (address = cAnyHost) then // for client: '0.0.0.0' -> '127.0.0.1'
     begin
-      tobecached := true;
-      result := addr.SetFrom(address, port, layer);
+      result := addr.SetIP4Port(cLocalhost32, p);
+      exit;
     end
-  else
-    result := addr.SetFrom(address, port, layer);
+    else if NetIsIP4(pointer(address), @ip4) then
+    begin
+      result := addr.SetIP4Port(ip4, p);
+      exit;
+    end
+    else if Assigned(NewSocketAddressCache) then
+      if NewSocketAddressCache.Search(address, addr) then
+      begin
+        fromcache := true;
+        result := addr.SetPort(p);
+        exit;
+      end
+      else
+        tobecached := true;
+  result := addr.SetFrom(address, port, layer);
 end;
 
 function ExistSocketAddressFromCache(const host: RawUtf8): boolean;
@@ -1838,8 +2088,11 @@ begin
   begin
     result := NetLastError(WSAEADDRNOTAVAIL);
     if fromcache then
+    begin
       // force call the DNS resolver again, perhaps load-balacing is needed
       NewSocketAddressCache.Flush(address);
+      NetAddrCache.SafeFlush(address);
+    end;
     exit;
   end;
   // bind or connect to this Socket
@@ -2280,6 +2533,30 @@ begin
             (ToByte(ip4 shr 16) < 255);
 end;
 
+function IP4Filter(ip4: cardinal; filter: TIPAddress): boolean;
+begin
+  result := false; // e.g. tiaIPv6 or 0.0.0.0 or 127.0.0.1
+  if (ip4 <> $0100007f) and
+     (ip4 <> 0) then
+    case filter of
+      tiaAny,
+      tiaIPv4:
+        result := true;
+      tiaIPv4Public:
+        result := IsPublicIP(ip4);
+      tiaIPv4Private:
+        result := not IsPublicIP(ip4);
+      tiaIPv4Dhcp:
+        result := not IsApipaIP(ip4);
+      tiaIPv4DhcpPublic:
+        result := IsPublicIP(ip4) and
+                  not IsApipaIP(ip4);
+      tiaIPv4DhcpPrivate:
+        result := not IsPublicIP(ip4) and
+                  not IsApipaIP(ip4);
+    end;
+end;
+
 procedure IP4Short(ip4addr: PByteArray; var s: ShortString);
 begin
   s[0] := #0;
@@ -2679,6 +2956,78 @@ begin
   end
   else
     result := _GetDnsAddresses(usePosixEnv, {getAD=}true); // no cache for the AD
+end;
+
+var
+  KnownHostCache: TNetHostCache;
+  KnownHostCacheFileTime: TUnixTime;
+  RegKnownHostCache: TNetHostCache;
+
+procedure KnownHostCacheReload;
+var
+  p: PUtf8Char;
+  ip4: cardinal;
+  h: RawUtf8;
+begin
+  KnownHostCache.Count := 0;
+  KnownHostCache.AddFrom(RegKnownHostCache);
+  p := pointer(StringFromFile(host_file));
+  while p <> nil do
+  begin
+    if (p^ in ['1'..'9']) and
+       NetIsIP4(p, @ip4) and
+       ({%H-}ip4 <> 0) then
+    begin
+      p := PosChar(p, ' ');
+      repeat
+        h := NetGetNextSpaced(p);
+        if h = '' then
+          break;
+        KnownHostCache.Add(h, ip4);
+      until false;
+    end;
+    p := GotoNextLine(p);
+  end;
+end;
+
+function GetKnownHost(const HostName: RawUtf8; out ip4: cardinal): boolean;
+var
+  tixfile: TUnixTime;
+begin
+  result := false;
+  if HostName = '' then
+    exit;
+  KnownHostCache.Safe.Lock;
+  try
+    if KnownHostCache.TixDeprecated then
+    begin
+      // check at least every 8 seconds if the file actually changed on disk
+      tixfile := FileAgeToUnixTimeUtc(host_file);
+      if tixfile = 0 then
+        exit; // no hosts file
+      if tixfile <> KnownHostCacheFileTime then
+      begin
+        // hosts file content changed: reload it
+        KnownHostCacheFileTime := tixfile;
+        KnownHostCacheReload;
+      end;
+    end;
+    result := KnownHostCache.Find(HostName, ip4);
+  finally
+    KnownHostCache.Safe.UnLock;
+  end;
+end;
+
+procedure RegisterKnownHost(const HostName, Ip4: RawUtf8);
+var
+  ip32: cardinal;
+begin
+  if (HostName <> '') and
+     NetIsIP4(pointer(ip4), @ip32) then
+  begin
+    RegKnownHostCache.SafeAdd(HostName, ip32, {tixshr=}0);
+    KnownHostCache.SafeAdd(HostName, ip32, 0); // for immediate GetKnownHost()
+  end;
 end;
 
 
@@ -3468,7 +3817,7 @@ begin
   n := 0;
   while true do
     case text^ of
-      #0:
+      #0 .. ' ':
         if (b > 255) or
            (b < 0) or
            (n <> 3) then
@@ -3505,6 +3854,22 @@ begin
   if value <> nil then
     value^ := b;
   result := true; // 1.2.3.4
+end;
+
+function NetGetNextSpaced(var P: PUtf8Char): RawUtf8;
+var
+  S: PUtf8Char;
+begin
+  result := '';
+  while P^ = ' ' do
+    inc(P);
+  if P^ < ' ' then
+    exit; // end of line or end of file
+  S := P;
+  repeat
+    inc(P);
+  until P^ <= ' ';
+  FastSetString(result, S, P - S);
 end;
 
 procedure DoEncode(rp, sp: PAnsiChar; len: cardinal);

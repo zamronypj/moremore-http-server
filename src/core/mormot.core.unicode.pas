@@ -1106,6 +1106,12 @@ var
   NormToUpperAnsi7: TNormTable;
   NormToUpperAnsi7Byte: TNormTableByte absolute NormToUpperAnsi7;
 
+  /// this table will convert 'A'..'Z' into 'a'..'z'
+  // - so it will work with UTF-8 without decoding, whereas NormToUpper[] expects
+  // WinAnsi encoding
+  NormToLowerAnsi7: TNormTable;
+  NormToLowerAnsi7Byte: TNormTableByte absolute NormToLowerAnsi7;
+
   /// case sensitive NormToUpper[]/NormToLower[]-like table
   // - i.e. NormToNorm[c] = c
   NormToNorm: TNormTable;
@@ -1244,7 +1250,7 @@ function IdemPCharWithoutWhiteSpace(p: PUtf8Char; up: PAnsiChar): boolean;
 /// returns the index of a matching beginning of p^ in upArray[]
 // - returns -1 if no item matched
 // - ignore case - upArray^ must be already Upper
-// - chars are compared as 7-bit Ansi only (no accentuated characters)
+// - chars are compared as 7-bit Ansi only (no accentuated chars, nor UTF-8)
 // - warning: this function expects upArray[] items to have AT LEAST TWO
 // CHARS (it will use a fast 16-bit comparison of initial 2 bytes)
 // - consider IdemPPChar() which is faster but a bit more verbose
@@ -1253,7 +1259,7 @@ function IdemPCharArray(p: PUtf8Char; const upArray: array of PAnsiChar): intege
 /// returns the index of a matching beginning of p^ in nil-terminated up^ array
 // - returns -1 if no item matched
 // - ignore case - each up^ must be already Upper
-// - chars are compared as 7-bit Ansi only (no accentuated characters)
+// - chars are compared as 7-bit Ansi only (no accentuated chars, nor UTF-8)
 // - warning: this function expects up^ items to have AT LEAST TWO CHARS
 // (it will use a fast 16-bit comparison of initial 2 bytes)
 function IdemPPChar(p: PUtf8Char; up: PPAnsiChar): PtrInt;
@@ -1261,7 +1267,7 @@ function IdemPPChar(p: PUtf8Char; up: PPAnsiChar): PtrInt;
 /// returns the index of a matching beginning of p^ in upArray two characters
 // - returns -1 if no item matched
 // - ignore case - upArray^ must be already Upper
-// - chars are compared as 7-bit Ansi only (no accentuated characters)
+// - chars are compared as 7-bit Ansi only (no accentuated chars, nor UTF-8)
 function IdemPCharArrayBy2(p: PUtf8Char; const upArrayBy2Chars: RawUtf8): PtrInt;
   {$ifdef HASINLINE}inline;{$endif}
 
@@ -1278,27 +1284,35 @@ function IdemPCharU(p, up: PUtf8Char): boolean;
 // - this version expects p^ to point to an Unicode char array
 function IdemPCharW(p: PWideChar; up: PUtf8Char): boolean;
 
-/// check matching ending of p^ in upText
+/// check case-insensitive matching starting of text in upTextStart
 // - returns true if the item matched
-// - ignore case - upText^ must be already Upper
-// - chars are compared as 7-bit Ansi only (no accentuated characters)
-function EndWith(const text, upText: RawUtf8): boolean;
+// - ignore case - upTextStart must be already in upper case
+// - chars are compared as 7-bit Ansi only (no accentuated chars, nor UTF-8)
+// - see StartWithExact() from mormot.core.text for a case-sensitive version
+function StartWith(const text, upTextStart: RawUtf8): boolean;
 
-/// returns the index of a matching ending of p^ in upArray[]
+/// check case-insensitive matching ending of text in upTextEnd
+// - returns true if the item matched
+// - ignore case - upTextEnd must be already in upper case
+// - chars are compared as 7-bit Ansi only (no accentuated chars, nor UTF-8)
+// - see EndWithExact() from mormot.core.text for a case-sensitive version
+function EndWith(const text, upTextEnd: RawUtf8): boolean;
+
+/// returns the index of a case-insensitive matching ending of p^ in upArray[]
 // - returns -1 if no item matched
-// - ignore case - upArray^ must be already Upper
-// - chars are compared as 7-bit Ansi only (no accentuated characters)
+// - ignore case - upArray[] items must be already in upper case
+// - chars are compared as 7-bit Ansi only (no accentuated chars, nor UTF-8)
 function EndWithArray(const text: RawUtf8; const upArray: array of RawUtf8): integer;
 
 /// returns true if the file name extension contained in p^ is the same same as extup^
 // - ignore case - extup^ must be already Upper
-// - chars are compared as WinAnsi (codepage 1252), not as UTF-8
+// - chars are compared as 7-bit Ansi only (no accentuated chars, nor UTF-8)
 // - could be used e.g. like IdemFileExt(aFileName,'.JP');
 function IdemFileExt(p: PUtf8Char; extup: PAnsiChar; sepChar: AnsiChar = '.'): boolean;
 
 /// returns matching file name extension index as extup^
 // - ignore case - extup[] must be already Upper
-// - chars are compared as WinAnsi (codepage 1252), not as UTF-8
+// - chars are compared as 7-bit Ansi only (no accentuated chars, nor UTF-8)
 // - could be used e.g. like IdemFileExts(aFileName,['.PAS','.INC']);
 function IdemFileExts(p: PUtf8Char; const extup: array of PAnsiChar;
   sepChar: AnsiChar = '.'): integer;
@@ -1555,40 +1569,54 @@ function IsCaseSensitive(const S: RawUtf8): boolean; overload;
 // - will therefore be correct with true UTF-8 content, but only for 7-bit
 function IsCaseSensitive(P: PUtf8Char; PLen: PtrInt): boolean; overload;
 
-/// fast conversion of the supplied text into uppercase
-// - this will only convert 'a'..'z' into 'A'..'Z' (no NormToUpper use), and
-// will therefore be correct with true UTF-8 content, but only for 7-bit
-function UpperCase(const S: RawUtf8): RawUtf8;
+/// low-level function called when inlining UpperCase(Copy) and LowerCase(Copy)
+procedure CaseCopy(Text: PUtf8Char; Len: PtrInt; Table: PNormTable;
+  var Dest: RawUtf8);
+
+/// low-level function called when inlining UpperCaseSelf and LowerCaseSelf
+procedure CaseSelf(var S: RawUtf8; Table: PNormTable);
 
 /// fast conversion of the supplied text into uppercase
 // - this will only convert 'a'..'z' into 'A'..'Z' (no NormToUpper use), and
 // will therefore be correct with true UTF-8 content, but only for 7-bit
-procedure UpperCaseCopy(Text: PUtf8Char; Len: PtrInt; var result: RawUtf8); overload;
+function UpperCase(const S: RawUtf8): RawUtf8;
+  {$ifdef HASINLINE} inline; {$endif}
+
+/// fast conversion of the supplied text into uppercase
+// - this will only convert 'a'..'z' into 'A'..'Z' (no NormToUpper use), and
+// will therefore be correct with true UTF-8 content, but only for 7-bit
+procedure UpperCaseCopy(Text: PUtf8Char; Len: PtrInt; var Dest: RawUtf8); overload;
+  {$ifdef HASINLINE} inline; {$endif}
 
 /// fast conversion of the supplied text into uppercase
 // - this will only convert 'a'..'z' into 'A'..'Z' (no NormToUpper use), and
 // will therefore be correct with true UTF-8 content, but only for 7-bit
 procedure UpperCaseCopy(const Source: RawUtf8; var Dest: RawUtf8); overload;
+  {$ifdef HASINLINE} inline; {$endif}
 
 /// fast in-place conversion of the supplied variable text into uppercase
 // - this will only convert 'a'..'z' into 'A'..'Z' (no NormToUpper use), and
 // will therefore be correct with true UTF-8 content, but only for 7-bit
 procedure UpperCaseSelf(var S: RawUtf8);
+  {$ifdef HASINLINE} inline; {$endif}
 
 /// fast conversion of the supplied text into lowercase
 // - this will only convert 'A'..'Z' into 'a'..'z' (no NormToLower use), and
 // will therefore be correct with true UTF-8 content
 function LowerCase(const S: RawUtf8): RawUtf8;
+  {$ifdef HASINLINE} inline; {$endif}
 
 /// fast conversion of the supplied text into lowercase
 // - this will only convert 'A'..'Z' into 'a'..'z' (no NormToLower use), and
 // will therefore be correct with true UTF-8 content
-procedure LowerCaseCopy(Text: PUtf8Char; Len: PtrInt; var result: RawUtf8);
+procedure LowerCaseCopy(Text: PUtf8Char; Len: PtrInt; var Dest: RawUtf8);
+  {$ifdef HASINLINE} inline; {$endif}
 
 /// fast in-place conversion of the supplied variable text into lowercase
 // - this will only convert 'A'..'Z' into 'a'..'z' (no NormToLower use), and
 // will therefore be correct with true UTF-8 content, but only for 7-bit
 procedure LowerCaseSelf(var S: RawUtf8);
+  {$ifdef HASINLINE} inline; {$endif}
 
 /// accurate conversion of the supplied UTF-8 content into the corresponding
 // upper-case Unicode characters
@@ -5034,13 +5062,19 @@ begin
   result := true;
 end;
 
-function EndWith(const text, upText: RawUtf8): boolean;
+function StartWith(const text, upTextStart: RawUtf8): boolean;
+begin
+  result := (length(text) >= length(upTextStart)) and
+            IdemPChar(pointer(text), pointer(upTextStart));
+end;
+
+function EndWith(const text, upTextEnd: RawUtf8): boolean;
 var
   o: PtrInt;
 begin
-  o := length(text) - length(upText);
+  o := length(text) - length(upTextEnd);
   result := (o >= 0) and
-            IdemPChar(PUtf8Char(pointer(text)) + o, pointer(upText));
+            IdemPChar(PUtf8Char(pointer(text)) + o, pointer(upTextEnd));
 end;
 
 function EndWithArray(const text: RawUtf8; const upArray: array of RawUtf8): integer;
@@ -6486,79 +6520,61 @@ begin
   result := false;
 end;
 
-function UpperCase(const S: RawUtf8): RawUtf8;
-var
-  L, i: PtrInt;
-begin
-  L := length(S);
-  FastSetString(result, pointer(S), L);
-  for i := 0 to L - 1 do
-    if PByteArray(result)[i] in [ord('a')..ord('z')] then
-      dec(PByteArray(result)[i], 32);
-end;
-
-procedure UpperCaseCopy(Text: PUtf8Char; Len: PtrInt; var result: RawUtf8);
+procedure CaseCopy(Text: PUtf8Char; Len: PtrInt; Table: PNormTable;
+  var Dest: RawUtf8);
 var
   i: PtrInt;
+  tmp: PAnsiChar;
 begin
-  FastSetString(result, Text, Len);
+  tmp := FastNewString(Len, CP_UTF8);
   for i := 0 to Len - 1 do
-    if PByteArray(result)[i] in [ord('a')..ord('z')] then
-      dec(PByteArray(result)[i], 32);
+    tmp[i] := Table[Text[i]]; // branchless conversion
+  FastAssignNew(Dest, tmp);
+end;
+
+procedure CaseSelf(var S: RawUtf8; Table: PNormTable);
+var
+  i: PtrInt;
+  P: PUtf8Char;
+begin
+  P := UniqueRawUtf8(S);
+  for i := 0 to length(S) - 1 do
+    P[i] := Table[P[i]]; // branchless conversion
+end;
+
+function UpperCase(const S: RawUtf8): RawUtf8;
+begin
+  CaseCopy(pointer(S), length(S), @NormToUpperAnsi7, result);
+end;
+
+procedure UpperCaseCopy(Text: PUtf8Char; Len: PtrInt; var Dest: RawUtf8);
+begin
+  CaseCopy(Text, Len, @NormToUpperAnsi7, Dest);
 end;
 
 procedure UpperCaseCopy(const Source: RawUtf8; var Dest: RawUtf8);
-var
-  L, i: PtrInt;
 begin
-  L := length(Source);
-  FastSetString(Dest, pointer(Source), L);
-  for i := 0 to L - 1 do
-    if PByteArray(Dest)[i] in [ord('a')..ord('z')] then
-      dec(PByteArray(Dest)[i], 32);
+  CaseCopy(pointer(Source), length(Source), @NormToUpperAnsi7, Dest);
 end;
 
 procedure UpperCaseSelf(var S: RawUtf8);
-var
-  i: PtrInt;
-  P: PByteArray;
 begin
-  P := UniqueRawUtf8(S);
-  for i := 0 to length(S) - 1 do
-    if P[i] in [ord('a')..ord('z')] then
-      dec(P[i], 32);
+  CaseSelf(S, @NormToUpperAnsi7);
 end;
 
 function LowerCase(const S: RawUtf8): RawUtf8;
-var
-  L, i: PtrInt;
 begin
-  L := length(S);
-  FastSetString(result, pointer(S), L);
-  for i := 0 to L - 1 do
-    if PByteArray(result)[i] in [ord('A')..ord('Z')] then
-      inc(PByteArray(result)[i], 32);
+  CaseCopy(pointer(S), length(S), @NormToLowerAnsi7, result);
 end;
 
-procedure LowerCaseCopy(Text: PUtf8Char; Len: PtrInt; var result: RawUtf8);
-var
-  i: PtrInt;
+procedure LowerCaseCopy(Text: PUtf8Char; Len: PtrInt; var Dest: RawUtf8);
 begin
-  FastSetString(result, Text, Len);
-  for i := 0 to Len - 1 do
-    if PByteArray(result)[i] in [ord('A')..ord('Z')] then
-      inc(PByteArray(result)[i], 32);
+  CaseCopy(Text, Len, @NormToLowerAnsi7, Dest);
 end;
 
 procedure LowerCaseSelf(var S: RawUtf8);
-var
-  i: PtrInt;
-  P: PByteArray;
 begin
-  P := UniqueRawUtf8(S);
-  for i := 0 to length(S) - 1 do
-    if P[i] in [ord('A')..ord('Z')] then
-      inc(P[i], 32);
+  CaseSelf(S, @NormToLowerAnsi7);
 end;
 
 
@@ -7490,6 +7506,9 @@ begin
   NormToUpperAnsi7Byte := NormToNormByte;
   for i := ord('a') to ord('z') do
     dec(NormToUpperAnsi7Byte[i], 32);
+  NormToLowerAnsi7Byte := NormToNormByte;
+  for i := ord('A') to ord('Z') do
+    inc(NormToLowerAnsi7Byte[i], 32);
   MoveFast(NormToUpperAnsi7, NormToUpper, 138);
   MoveFast(WinAnsiToUp, NormToUpperByte[138], SizeOf(WinAnsiToUp));
   for i := 0 to 255 do
@@ -7520,6 +7539,7 @@ begin
     if c in [#1..' ', ';'] then
       include(TEXT_CHARS[c], tcCtrlNot0Comma);
   end;
+  // setup sorting functions redirection
   StrCompByCase[false] := @StrComp;
   StrCompByCase[true] := @StrIComp;
   {$ifdef CPUINTEL}

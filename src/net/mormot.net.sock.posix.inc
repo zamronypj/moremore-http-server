@@ -29,6 +29,8 @@ uses
 { ******** Sockets Type Definitions }
 
 const
+  host_file = '/etc/hosts';
+
   NI_MAXHOST = 1025;
   NI_MAXSERV = 32;
 
@@ -421,35 +423,16 @@ begin
       end;
     exit;
   end;
-  // check supplied port
+  // check supplied IP port
   addr4.sin_port := htons(GetCardinal(pointer(addrport)));
   if (addr4.sin_port = 0) and
      (addrport <> '0') then // explicit '0' to get ephemeral port
     exit;
-  // handle simple cases
+  // check most simple IPv4 resolution (maybe using mormot.net.dns)
   result := nrOk;
-  if (address = cLocalhost) or
-     (address = c6Localhost) or
-     PropNameEquals(address, 'localhost') then
-  begin
-    addr4.sin_family := AF_INET;
-    PCardinal(@addr4.sin_addr)^ := cLocalhost32; // 127.0.0.1
+  if SetFromIP4(address) then
     exit;
-  end
-  else if (address = cBroadcast) or
-          (address = c6Broadcast) then
-  begin
-    addr4.sin_family := AF_INET;
-    PCardinal(@addr4.sin_addr)^ := cardinal(-1); // 255.255.255.255
-    exit;
-  end
-  else if (address = cAnyHost) or
-          (address = c6AnyHost) then
-  begin
-    addr4.sin_family := AF_INET; // 0.0.0.0
-    exit;
-  end;
-  // resolve name or IP (getaddrinfo is more recent, but addrinfo is not fixed)
+  // use OS API (getaddrinfo is more recent, but addrinfo is not cross-platform)
   _gethostbynamesafe.Lock;
   try
     h := gethostbyname(pointer(address));
@@ -673,25 +656,8 @@ begin
         s := '';
         case info^.ifa_addr^.sa_family of
           AF_INET:
-            if kind <> tiaIPv6 then
-              with info^.ifa_addr^ do
-                if (integer(sin_addr) <> $0100007f) and
-                   (integer(sin_addr) <> 0) then
-                  case Kind of
-                    tiaIpv4,
-                    tiaAny:
-                      IP4Text(@sin_addr,s);
-                    tiaIPv4Public:
-                      if IsPublicIP(integer(sin_addr)) then
-                        IP4Text(@sin_addr, s);
-                    tiaIPv4Private:
-                      if not IsPublicIP(integer(sin_addr)) then
-                        IP4Text(@sin_addr, s);
-                    tiaIPv4DhcpPublic:
-                      if IsPublicIP(integer(sin_addr)) and
-                         not IsApipaIP(integer(sin_addr)) then
-                        IP4Text(@sin_addr, s);
-                  end;
+            if IP4Filter(integer(info^.ifa_addr^.sin_addr), Kind) then
+              IP4Text(@info^.ifa_addr^.sin_addr,s);
           AF_INET6:
             if kind in [tiaAny, tiaIPv6] then
               with PSockAddrIn6(info^.ifa_addr)^ do
@@ -827,22 +793,6 @@ end;
 
 {$endif USE_IFADDRS}
 
-function GetNextSpaced(var P: PAnsiChar): RawUtf8;
-var
-  S: PAnsiChar;
-begin
-  result := '';
-  while P^ = ' ' do
-    inc(P);
-  if P^ < ' ' then
-    exit; // end of line or end of file
-  S := P;
-  repeat
-    inc(P);
-  until P^ <= ' ';
-  FastSetString(result, S, P - S);
-end;
-
 function _GetDnsAddresses(usePosixEnv, getAD: boolean): TRawUtf8DynArray;
 var
   resolv, one: RawUtf8;
@@ -861,7 +811,9 @@ begin
   p := pointer(resolv);
   while p <> nil do
   begin
-    if getAD then
+    if p^ in [#1..' ', '#'] then
+      ok := false
+    else if getAD then
       ok := NetStartWith(p, 'SEARCH ') or
             NetStartWith(p, 'DOMAIN ')  // "domain" is used e.g. on MacOS
     else
@@ -870,7 +822,7 @@ begin
     begin
       p := PosChar(p, ' '); // search ad.mycomp.tld mycom.tld
       repeat
-        one := GetNextSpaced(p);
+        one := NetGetNextSpaced(p);
         if one = '' then
           break;
         SetLength(result, n + 1);

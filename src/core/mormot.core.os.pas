@@ -1739,31 +1739,6 @@ function DelayedProc(var api; var lib: THandle;
   libname: PChar; procname: PAnsiChar): boolean;
 
 type
-  /// encapsulate a PROPVARIANT Windows type into an opaque binary buffer
-  // - some kind of enhanced variant, on which VariantToInt64, VariantToUtf8 and
-  // VariantToDateTime do work at least for the varOle* extended types
-  TPropVariant = object
-    /// map the stored value
-    Value: TVarData;
-    /// fill the instance with zeros
-    procedure Init;
-      {$ifdef HASINLINE}inline;{$endif}
-    /// finalize an instance - i.e. free any BSTR stored
-    procedure Clear;
-      {$ifdef HASINLINE}inline;{$endif}
-    function ToInt: Int64;
-      {$ifdef HASINLINE}inline;{$endif}
-  end;
-
-const
-  // map varOleInt/varOleUInt/varOlePAnsiChar/varOlePWideChar/varOleFileTime
-  VT_INT      = 22;
-  VT_UINT     = 23;
-  VT_LPSTR    = 30;
-  VT_LPWSTR   = 31;
-  VT_FILETIME = 64;
-
-type
   HCRYPTPROV = pointer;
   HCRYPTKEY = pointer;
   HCRYPTHASH = pointer;
@@ -1957,6 +1932,7 @@ const
   ERROR_CONNECTION_INVALID = Windows.ERROR_CONNECTION_INVALID;
   ERROR_OLD_WIN_VERSION = Windows.ERROR_OLD_WIN_VERSION;
   ERROR_IO_PENDING = Windows.ERROR_IO_PENDING;
+  ERROR_OPERATION_ABORTED = Windows.ERROR_OPERATION_ABORTED;
 
   INVALID_HANDLE_VALUE = Windows.INVALID_HANDLE_VALUE; // = HANDLE(-1)
   ENGLISH_LANGID = $0409;
@@ -2131,6 +2107,11 @@ function DeleteFile(const aFileName: TFileName): boolean;
 /// redefined here to avoid warning to include "Windows" in uses clause
 // - why did Delphi define this slow RTL function as inlined in SysUtils.pas?
 function RenameFile(const OldName, NewName: TFileName): boolean;
+
+/// redirection to Windows SetFileTime() of a file name from Int64(TFileTime)
+// - if any Int64 is 0, the proper value will be guess from the non-0 values
+function FileSetTime(const FileName: TFileName;
+  const Created, Accessed, Written: Int64): boolean;
 
 {$else}
 
@@ -2374,7 +2355,7 @@ procedure UnixTimeToFileTime(I64: TUnixTime; out FT: TFileTime);
 function FileTimeToUnixTime(const FT: TFileTime): TUnixTime;
   {$ifdef FPC} inline; {$endif}
 
-/// convert a Win32 64-bit FILETIME value into an TDateTime
+/// convert a Win32 64-bit FILETIME value into a TDateTime
 function FileTimeToDateTime(const FT: TFileTime): TDateTime;
 
 /// convert a Win32 64-bit FILETIME value into an Unix milliseconds time
